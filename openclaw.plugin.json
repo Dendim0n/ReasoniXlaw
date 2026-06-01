@@ -1,0 +1,38 @@
+{
+  "id": "deepseek-harness",
+  "name": "DeepSeek Harness",
+  "version": "0.1.0",
+  "description": "Prefix-cache stable context engine for DeepSeek models",
+  "entry": "dist/index.js",
+  "kind": "plugin",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "targetModels": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Model name patterns that activate prefix-stable mode"
+      },
+      "prefixLockCount": {
+        "type": "number",
+        "description": "Messages to lock into prefix layer"
+      },
+      "recentKeepCount": {
+        "type": "number",
+        "description": "Recent messages to keep verbatim in tail"
+      },
+      "compactRatio": {
+        "type": "number",
+        "description": "Context ratio that triggers compaction"
+      },
+      "archiveDropped": {
+        "type": "boolean",
+        "description": "Archive dropped messages to disk"
+      }
+    },
+    "additionalProperties": false
+  }
+}
