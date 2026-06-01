@@ -29,6 +29,9 @@ import type { AgentMessage } from "openclaw/plugin-sdk/agent-harness-runtime";
 import type { DeepSeekHarnessConfig, ResolvedConfig } from "./types.js";
 import { DEFAULT_CONFIG, estimateTotalTokens, estimateTextTokens, extractContent, extractToolCallNames } from "./types.js";
 
+import { createSubsystemLogger } from "openclaw/plugin-sdk/logging-core";
+const log = createSubsystemLogger("deepseek-harness");
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 /**
@@ -158,7 +161,7 @@ export class DeepSeekContextEngine implements ContextEngine {
 
   constructor(config: DeepSeekHarnessConfig = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
-    console.log(`[deepseek-harness] context engine created`);
+    log.info(`[deepseek-harness] context engine created`);
   }
 
   // ── State persistence helpers ───────────────────────────────────────────────
@@ -172,7 +175,7 @@ export class DeepSeekContextEngine implements ContextEngine {
       ingestedCount: this.ingestedCount,
       lastModel: this.lastModel,
     });
-    console.log(`[deepseek-harness] saveState: sessionId=${this.sessionId}, prefix=${this.prefix.length}, tail=${this.tail.length}`);
+    log.info(`[deepseek-harness] saveState: sessionId=${this.sessionId}, prefix=${this.prefix.length}, tail=${this.tail.length}`);
   }
 
   private restoreState(sessionId: string): boolean {
@@ -183,10 +186,10 @@ export class DeepSeekContextEngine implements ContextEngine {
       this.compressedSummary = saved.compressedSummary;
       this.ingestedCount = saved.ingestedCount;
       this.lastModel = saved.lastModel;
-      console.log(`[deepseek-harness] restoreState: sessionId=${sessionId}, prefix=${this.prefix.length}, tail=${this.tail.length}`);
+      log.info(`[deepseek-harness] restoreState: sessionId=${sessionId}, prefix=${this.prefix.length}, tail=${this.tail.length}`);
       return true;
     }
-    console.log(`[deepseek-harness] restoreState: no saved state for ${sessionId}`);
+    log.info(`[deepseek-harness] restoreState: no saved state for ${sessionId}`);
     return false;
   }
 
@@ -215,7 +218,7 @@ export class DeepSeekContextEngine implements ContextEngine {
       this.ingestedCount = 0;
     }
 
-    console.log(`[deepseek-harness] bootstrap: sessionId=${params.sessionId}, prefix=${this.prefix.length}, tail=${this.tail.length}`);
+    log.info(`[deepseek-harness] bootstrap: sessionId=${params.sessionId}, prefix=${this.prefix.length}, tail=${this.tail.length}`);
     return { bootstrapped: true };
   }
 
@@ -254,11 +257,11 @@ export class DeepSeekContextEngine implements ContextEngine {
     // Non-DeepSeek model: pass through unchanged
     if (!isDeepSeekModel(model, this.config.targetModels)) {
       this.lastModel = model;
-      console.log(`[deepseek-harness] assemble: model=${model}, passthrough (non-DeepSeek)`);
+      log.info(`[deepseek-harness] assemble: model=${model}, passthrough (non-DeepSeek)`);
       return { messages, estimatedTokens: estimateTotalTokens(messages) };
     }
     this.lastModel = model;
-    console.log(`[deepseek-harness] assemble: model=${model}, prefix-stable active (messages=${messages.length}, prefix=${this.prefix.length}, tail=${this.tail.length})`);
+    log.info(`[deepseek-harness] assemble: model=${model}, prefix-stable active (messages=${messages.length}, prefix=${this.prefix.length}, tail=${this.tail.length})`);
 
     // First call: split into prefix + tail
     if (this.prefix.length === 0 && messages.length > 0) {
@@ -351,16 +354,16 @@ export class DeepSeekContextEngine implements ContextEngine {
   }): Promise<CompactResult> {
     // Non-DeepSeek model: skip prefix-stable compaction
     if (!isDeepSeekModel(this.lastModel, this.config.targetModels)) {
-      console.log(`[deepseek-harness] compact: model=${this.lastModel}, skipped (non-DeepSeek)`);
+      log.info(`[deepseek-harness] compact: model=${this.lastModel}, skipped (non-DeepSeek)`);
       return { ok: true, compacted: false, reason: "non-DeepSeek model, using default compaction" };
     }
 
     if (this.tail.length <= this.config.recentKeepCount) {
-      console.log(`[deepseek-harness] compact: tail=${this.tail.length}, skipped (too short)`);
+      log.info(`[deepseek-harness] compact: tail=${this.tail.length}, skipped (too short)`);
       return { ok: true, compacted: false, reason: "tail too short" };
     }
 
-    console.log(`[deepseek-harness] compact: prefix-stable compaction triggered (tail=${this.tail.length})`);
+    log.info(`[deepseek-harness] compact: prefix-stable compaction triggered (tail=${this.tail.length})`);
 
     // Split tail into [toCompact] | [toKeep]
     const keepStart = this.tail.length - this.config.recentKeepCount;
@@ -449,7 +452,7 @@ export class DeepSeekContextEngine implements ContextEngine {
   async dispose(): Promise<void> {
     // Save state to module-level map so next turn's engine can restore it
     this.saveState();
-    console.log(`[deepseek-harness] dispose: state saved, prefix=${this.prefix.length}, tail=${this.tail.length}`);
+    log.info(`[deepseek-harness] dispose: state saved, prefix=${this.prefix.length}, tail=${this.tail.length}`);
     // DO NOT clear layers — the module-level map holds them across PI's dispose/recreate cycle
   }
 
