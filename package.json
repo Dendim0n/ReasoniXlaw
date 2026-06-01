@@ -1,5 +1,5 @@
 {
-  "name": "openclaw-deepseek-harness",
+  "name": "reasonixlaw",
   "version": "0.1.0",
   "description": "Prefix-cache stable context engine for DeepSeek models — OpenClaw plugin",
   "type": "module",

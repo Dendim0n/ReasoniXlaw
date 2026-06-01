@@ -1,6 +1,6 @@
 {
   "id": "deepseek-harness",
-  "name": "DeepSeek Harness",
+  "name": "ReasoniXlaw",
   "version": "0.1.0",
   "description": "Prefix-cache stable context engine for DeepSeek models",
   "entry": "dist/index.js",
