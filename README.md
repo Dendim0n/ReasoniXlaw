@@ -56,6 +56,14 @@ let PI handle everything else. No custom HTTP client, no tool bridge, no auth ha
 
 ## Installation
 
+**Via ClawHub (recommended):**
+
+```bash
+openclaw plugins install clawhub:@dendim0n/reasonixlaw
+```
+
+**From source:**
+
 ```bash
 cd ~/.openclaw/plugins
 git clone https://github.com/Dendim0n/ReasoniXlaw.git

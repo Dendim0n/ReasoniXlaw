@@ -55,6 +55,14 @@ DeepSeek 每轮看到相同的开头 → 缓存命中 → 省 90% 费用。
 
 ## 安装
 
+**通过 ClawHub（推荐）：**
+
+```bash
+openclaw plugins install clawhub:@dendim0n/reasonixlaw
+```
+
+**从源码安装：**
+
 ```bash
 cd ~/.openclaw/plugins
 git clone https://github.com/Dendim0n/ReasoniXlaw.git
