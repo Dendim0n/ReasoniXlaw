@@ -125,7 +125,7 @@ Non-DeepSeek models get PI's default context management — no overhead, no inte
 
 ### Optional tuning
 
-The context engine reads config from the plugin entry (future: `plugins.entries.deepseek-harness.config`):
+The context engine reads config from the plugin entry:
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -134,6 +134,28 @@ The context engine reads config from the plugin entry (future: `plugins.entries.
 | `compactRatio` | 0.8 | Context ratio that triggers compaction |
 | `archiveDropped` | true | Archive dropped messages to disk |
 | `targetModels` | `["deepseek-v4-flash", "deepseek-v4-pro"]` | Model name patterns that activate prefix-stable mode |
+
+#### `prefixLockCount` (default: 2)
+
+Number of messages locked into the prefix layer. These 2 messages (typically the system prompt + first user message) **never change** — they're the core of DeepSeek's cache hit. Too large wastes context space; too small doesn't lock enough prefix. 2 is usually sufficient.
+
+#### `recentKeepCount` (default: 8)
+
+Number of recent messages kept verbatim in the tail layer. These messages are **not summarized** during compaction. 8 means your last 4 conversation turns retain full detail. Too large → context bloats quickly; too small → recent memory gets fuzzy.
+
+#### `compactRatio` (default: 0.8)
+
+Triggers compaction when token usage reaches 80% of the context window. 0.8 is a sweet spot — too early (0.5) wastes space; too late (0.95) risks PI force-truncating before compaction finishes.
+
+#### `archiveDropped` (default: true)
+
+Whether messages dropped during compaction are archived to `~/.openclaw/deepseek-harness/archive/` (JSONL format). Useful for post-hoc auditing; disable to save disk I/O.
+
+#### `targetModels`
+
+Which model names trigger prefix-stable mode. This **replaces** (not appends to) the default list — so if you customize it, include the defaults too, otherwise `deepseek-v4-flash` etc. won't activate.
+
+> **Generally the defaults work fine.** Only tune if: context is tight (lower `prefixLockCount`), you need more precise recent memory (raise `recentKeepCount`), or context overflows frequently (lower `compactRatio`).
 
 ## How It Works
 

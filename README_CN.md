@@ -132,6 +132,28 @@ npm run build
 | `archiveDropped` | true | 是否将被丢弃的消息归档到磁盘 |
 | `targetModels` | `["deepseek-v4-flash", "deepseek-v4-pro"]` | 触发 prefix-stable 模式的模型名模式 |
 
+#### `prefixLockCount`（默认：2）
+
+锁进 prefix 层的消息数。这 2 条消息（通常是 system prompt + 第一条用户消息）**永远不变**，是 DeepSeek 缓存命中的核心。设太大浪费 context 空间，设太小锁不住足够的 prefix。一般 2 就够了。
+
+#### `recentKeepCount`（默认：8）
+
+tail 层保留的最近消息数。这些消息在压缩时不被摘要，保持原文。8 条意味着你最近 4 轮对话不会丢细节。设太大 → 上下文膨胀快；设太小 → 近期记忆模糊。
+
+#### `compactRatio`（默认：0.8）
+
+当已用 token 达到 context window 的 80% 时触发压缩。0.8 是个平衡点——太早压缩（0.5）浪费空间，太晚（0.95）可能来不及压缩就被 PI 强制截断了。
+
+#### `archiveDropped`（默认：true）
+
+压缩时被丢弃的消息是否归档到 `~/.openclaw/deepseek-harness/archive/` 目录（JSONL 格式）。开起来方便事后审计或回溯，关了省磁盘 I/O。
+
+#### `targetModels`
+
+哪些模型名触发 prefix-stable 模式。**替换**（不是追加）默认列表，所以你自定义时要把默认的也写上，否则 `deepseek-v4-flash` 之类的默认模型就不激活了。
+
+> **一般来说默认值就够用。** 除非：context 特别紧张（降 `prefixLockCount`），近期对话需要更精确（提 `recentKeepCount`），上下文经常爆（降 `compactRatio`）。
+
 ## 工作原理
 
 1. **首次 `assemble()` 调用**：系统 prompt + 前 N 条消息 → 锁入 Layer 1（prefix）
