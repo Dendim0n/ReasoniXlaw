@@ -56,8 +56,8 @@ let PI handle everything else. No custom HTTP client, no tool bridge, no auth ha
 
 ```bash
 cd ~/.openclaw/plugins
-git clone https://github.com/YOUR_USER/openclaw-deepseek-harness.git
-cd openclaw-deepseek-harness
+git clone https://github.com/Dendim0n/ReasoniXlaw.git
+cd ReasoniXlaw
 npm install
 npm run build
 ```

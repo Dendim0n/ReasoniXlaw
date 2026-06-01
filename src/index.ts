@@ -1,5 +1,5 @@
 /**
- * openclaw-deepseek-harness — Plugin entry point
+ * ReasoniXlaw — Plugin entry point
  *
  * Registers a ContextEngine: "deepseek-prefix-stable"
  *
