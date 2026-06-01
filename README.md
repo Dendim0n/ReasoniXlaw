@@ -8,6 +8,8 @@
 
 > Inspired by [Reasonix](https://github.com/esengine/DeepSeek-Reasonix) — thanks to the project author for the prefix-stable context management concept.
 
+English | [中文](./README_CN.md)
+
 ## Problem
 
 DeepSeek's API offers **prefix caching**: if the beginning of your request is identical to a previous one, cached tokens cost ~10% of normal input price — up to 90% savings.
