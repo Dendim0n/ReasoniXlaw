@@ -58,6 +58,8 @@ let PI handle everything else. No custom HTTP client, no tool bridge, no auth ha
 
 **Via ClawHub (recommended):**
 
+> ⚠️ **Note:** ClawHub currently has a bug that prevents this plugin from being published. Please install from source until the issue is resolved.
+
 ```bash
 openclaw plugins install clawhub:@dendim0n/reasonixlaw
 ```

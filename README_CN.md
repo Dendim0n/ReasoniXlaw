@@ -57,6 +57,8 @@ DeepSeek 每轮看到相同的开头 → 缓存命中 → 省 90% 费用。
 
 **通过 ClawHub（推荐）：**
 
+> ⚠️ **注意：** ClawHub 目前存在一个 bug，导致此插件无法发布到 ClawHub。在此问题修复之前，请从源码安装。
+
 ```bash
 openclaw plugins install clawhub:@dendim0n/reasonixlaw
 ```
