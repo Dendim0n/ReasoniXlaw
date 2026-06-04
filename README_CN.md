@@ -93,7 +93,7 @@ npm run build
 
 ### 自定义目标模型
 
-默认 `deepseek-v4-flash` 和 `deepseek-v4-pro` 会触发 prefix-stable 模式。如需添加自己的模型：
+默认 `deepseek-v4-flash`、`deepseek-v4-pro`、`mimo-v2.5-pro` 和 `mimo-v2.5` 会触发 prefix-stable 模式。如需添加自己的模型：
 
 ```json5
 // ~/.openclaw/openclaw.json
@@ -103,7 +103,7 @@ npm run build
       "deepseek-harness": {
         enabled: true,
         config: {
-          targetModels: ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v3", "my-custom-deepseek"]
+          targetModels: ["deepseek-v4-flash", "deepseek-v4-pro", "mimo-v2.5-pro", "mimo-v2.5", "deepseek-v3", "my-custom-deepseek"]
         }
       }
     },
@@ -124,6 +124,8 @@ npm run build
 |------|-------------------|
 | `deepseek-v4-flash` | ✅ 激活 |
 | `deepseek-v4-pro` | ✅ 激活 |
+| `mimo-v2.5-pro` | ✅ 激活 |
+| `mimo-v2.5` | ✅ 激活 |
 | `deepseek/deepseek-v4-pro` | ✅ 激活（provider/model 格式） |
 | `deepseek-v3`、`deepseek-r1` | ✅ 激活 |
 | `gemini-2.5-flash` | ❌ 透传（PI 默认行为） |
@@ -140,7 +142,7 @@ npm run build
 | `recentKeepCount` | 8 | 在 tail 中保留的最近消息数 |
 | `compactRatio` | 0.8 | 触发压缩的上下文比例 |
 | `archiveDropped` | true | 是否将被丢弃的消息归档到磁盘 |
-| `targetModels` | `["deepseek-v4-flash", "deepseek-v4-pro"]` | 触发 prefix-stable 模式的模型名模式 |
+| `targetModels` | `["deepseek-v4-flash", "deepseek-v4-pro", "mimo-v2.5-pro", "mimo-v2.5"]` | 触发 prefix-stable 模式的模型名模式 |
 
 #### `prefixLockCount`（默认：2）
 
@@ -160,7 +162,7 @@ tail 层保留的最近消息数。这些消息在压缩时不被摘要，保持
 
 #### `targetModels`
 
-哪些模型名触发 prefix-stable 模式。**替换**（不是追加）默认列表，所以你自定义时要把默认的也写上，否则 `deepseek-v4-flash` 之类的默认模型就不激活了。
+哪些模型名触发 prefix-stable 模式。**替换**（不是追加）默认列表，所以你自定义时要把默认的也写上，否则 `deepseek-v4-flash`、`mimo-v2.5-pro` 之类的默认模型就不激活了。
 
 > **一般来说默认值就够用。** 除非：context 特别紧张（降 `prefixLockCount`），近期对话需要更精确（提 `recentKeepCount`），上下文经常爆（降 `compactRatio`）。
 

@@ -43,7 +43,7 @@ export const DEFAULT_CONFIG: ResolvedConfig = {
   compactRatio: 0.8,
   outputReservedTokens: 32768,
   archiveDropped: true,
-  targetModels: ["deepseek-v4-flash", "deepseek-v4-pro"],
+  targetModels: ["deepseek-v4-flash", "deepseek-v4-pro", "mimo-v2.5-pro", "mimo-v2.5"],
 };
 
 // ── Token Estimation ────────────────────────────────────────────────────────

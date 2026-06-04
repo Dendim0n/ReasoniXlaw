@@ -94,7 +94,7 @@ That's it. When a DeepSeek model is in use, PI will automatically use our prefix
 
 ### Custom model targets
 
-By default, `deepseek-v4-flash` and `deepseek-v4-pro` trigger prefix-stable mode. To add your own models:
+By default, `deepseek-v4-flash`, `deepseek-v4-pro`, `mimo-v2.5-pro`, and `mimo-v2.5` trigger prefix-stable mode. To add your own models:
 
 ```json5
 // ~/.openclaw/openclaw.json
@@ -104,7 +104,7 @@ By default, `deepseek-v4-flash` and `deepseek-v4-pro` trigger prefix-stable mode
       "deepseek-harness": {
         enabled: true,
         config: {
-          targetModels: ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v3", "my-custom-deepseek"]
+          targetModels: ["deepseek-v4-flash", "deepseek-v4-pro", "mimo-v2.5-pro", "mimo-v2.5", "deepseek-v3", "my-custom-deepseek"]
         }
       }
     },
@@ -125,6 +125,8 @@ The engine activates **only** for DeepSeek models. It checks the model string:
 |-------|-------------------|
 | `deepseek-v4-flash` | ✅ Active |
 | `deepseek-v4-pro` | ✅ Active |
+| `mimo-v2.5-pro` | ✅ Active |
+| `mimo-v2.5` | ✅ Active |
 | `deepseek/deepseek-v4-pro` | ✅ Active (provider/model format) |
 | `deepseek-v3`, `deepseek-r1` | ✅ Active |
 | `gemini-2.5-flash` | ❌ Passthrough (PI default) |
@@ -143,7 +145,7 @@ The context engine reads config from the plugin entry:
 | `recentKeepCount` | 8 | Recent messages to keep verbatim in tail |
 | `compactRatio` | 0.8 | Context ratio that triggers compaction |
 | `archiveDropped` | true | Archive dropped messages to disk |
-| `targetModels` | `["deepseek-v4-flash", "deepseek-v4-pro"]` | Model name patterns that activate prefix-stable mode |
+| `targetModels` | `["deepseek-v4-flash", "deepseek-v4-pro", "mimo-v2.5-pro", "mimo-v2.5"]` | Model name patterns that activate prefix-stable mode |
 
 #### `prefixLockCount` (default: 2)
 
@@ -163,7 +165,7 @@ Whether messages dropped during compaction are archived to `~/.openclaw/deepseek
 
 #### `targetModels`
 
-Which model names trigger prefix-stable mode. This **replaces** (not appends to) the default list — so if you customize it, include the defaults too, otherwise `deepseek-v4-flash` etc. won't activate.
+Which model names trigger prefix-stable mode. This **replaces** (not appends to) the default list — so if you customize it, include the defaults too, otherwise `deepseek-v4-flash`, `mimo-v2.5-pro` etc. won't activate.
 
 > **Generally the defaults work fine.** Only tune if: context is tight (lower `prefixLockCount`), you need more precise recent memory (raise `recentKeepCount`), or context overflows frequently (lower `compactRatio`).
 

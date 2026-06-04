@@ -11,7 +11,7 @@
  *       "deepseek-harness": {
  *         enabled: true,
  *         config: {
- *           targetModels: ["deepseek-v4-flash", "deepseek-v4-pro"]
+ *           targetModels: ["deepseek-v4-flash", "deepseek-v4-pro", "mimo-v2.5-pro", "mimo-v2.5"]
  *         }
  *       }
  *     },
