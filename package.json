@@ -1,6 +1,6 @@
 {
   "name": "@dendim0n/reasonixlaw",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Prefix-cache stable context engine for DeepSeek models — OpenClaw plugin",
   "type": "module",
   "main": "dist/index.js",
