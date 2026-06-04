@@ -42,6 +42,17 @@ function toolResultMsg(toolCallId: string, toolName: string, content: string): A
   } as unknown as AgentMessage;
 }
 
+function runtimeContextMsg(content: string): AgentMessage {
+  return {
+    role: "custom",
+    customType: "openclaw.runtime-context",
+    content,
+    display: false,
+    details: { source: "openclaw-runtime-context" },
+    timestamp: Date.now(),
+  } as unknown as AgentMessage;
+}
+
 async function makeSessionFile(name: string): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), `reasonixlaw-${name}-`));
   return join(dir, "session.jsonl");
@@ -430,9 +441,131 @@ describe("DeepSeekContextEngine", () => {
       expect(stats.prefixMessages).toBe(2);
       expect(stats.tailMessages).toBe(1);
       expect(stats.compactionCount).toBe(1);
+
+      const reset = await engine.assemble({
+        sessionId,
+        sessionFile,
+        messages: [userMsg("new prefix"), assistantMsg("new answer"), userMsg("new tail")],
+        model: "deepseek-v4-flash",
+      } as never);
+      const resetText = JSON.stringify(reset.messages);
+      expect(resetText).not.toContain("legacy prefix");
+      expect(resetText).toContain("new prefix");
+      expect(engine.getCacheStats().prefixResetCount).toBe(1);
     } finally {
       await cleanupSessionFile(sessionFile);
     }
+  });
+
+  test("runtime context custom messages are current-turn only and not persisted", async () => {
+    const sessionFile = await makeSessionFile("runtime-custom");
+    try {
+      const engine = new DeepSeekContextEngine({ prefixLockCount: 1 });
+      await engine.bootstrap({ sessionId: "runtime-custom-session", sessionFile });
+
+      const assembled = await engine.assemble({
+        sessionId: "runtime-custom-session",
+        sessionFile,
+        messages: [
+          userMsg("stable root"),
+          assistantMsg("stable ack"),
+          runtimeContextMsg("volatile runtime context A"),
+          userMsg("current user"),
+        ],
+        model: "deepseek-v4-flash",
+      } as never);
+
+      expect(JSON.stringify(assembled.messages)).toContain("volatile runtime context A");
+      await engine.dispose();
+
+      const sidecar = JSON.parse(await readFile(`${sessionFile}.reasonixlaw-state.json`, "utf-8")) as unknown;
+      expect(JSON.stringify(sidecar)).not.toContain("volatile runtime context A");
+    } finally {
+      await cleanupSessionFile(sessionFile);
+    }
+  });
+
+  test("runtime context custom messages do not accumulate across turns", async () => {
+    const engine = new DeepSeekContextEngine({ prefixLockCount: 1 });
+    await engine.bootstrap({ sessionId: SESSION_ID, sessionFile: SESSION_FILE });
+
+    await engine.assemble({
+      sessionId: SESSION_ID,
+      messages: [
+        userMsg("stable root"),
+        assistantMsg("stable ack"),
+        runtimeContextMsg("runtime context A"),
+        userMsg("second user"),
+      ],
+      model: "deepseek-v4-flash",
+    });
+
+    const second = await engine.assemble({
+      sessionId: SESSION_ID,
+      messages: [
+        userMsg("stable root"),
+        assistantMsg("stable ack"),
+        userMsg("second user"),
+        assistantMsg("second answer"),
+        runtimeContextMsg("runtime context B"),
+        userMsg("third user"),
+      ],
+      model: "deepseek-v4-flash",
+    });
+
+    const assembledText = JSON.stringify(second.messages);
+    expect(assembledText).not.toContain("runtime context A");
+    expect(assembledText).toContain("runtime context B");
+  });
+
+  test("afterTurn records prompt-cache telemetry in stats", async () => {
+    const engine = new DeepSeekContextEngine({ prefixLockCount: 1 });
+    await engine.bootstrap({ sessionId: SESSION_ID, sessionFile: SESSION_FILE });
+
+    await engine.afterTurn({
+      sessionId: SESSION_ID,
+      sessionFile: SESSION_FILE,
+      messages: [],
+      prePromptMessageCount: 0,
+      runtimeContext: {
+        promptCache: {
+          lastCallUsage: { cacheRead: 123, cacheWrite: 45 },
+          observation: {
+            broke: true,
+            changes: [{ code: "systemPrompt", detail: "system prompt digest changed" }],
+          },
+        },
+      },
+    } as never);
+
+    const stats = engine.getCacheStats();
+    expect(stats.promptCache?.lastCallUsage?.cacheRead).toBe(123);
+    expect(stats.promptCache?.observation?.broke).toBe(true);
+    expect(stats.promptCacheBreakCodes).toEqual(["systemPrompt"]);
+  });
+
+  test("incoming prefix divergence resets the locked projection", async () => {
+    const engine = new DeepSeekContextEngine({ prefixLockCount: 2 });
+    await engine.bootstrap({ sessionId: SESSION_ID, sessionFile: SESSION_FILE });
+
+    await engine.assemble({
+      sessionId: SESSION_ID,
+      messages: [userMsg("old root"), assistantMsg("old ack"), userMsg("old tail")],
+      model: "deepseek-v4-flash",
+    });
+
+    const reset = await engine.assemble({
+      sessionId: SESSION_ID,
+      messages: [userMsg("new root"), assistantMsg("new ack"), userMsg("new tail")],
+      model: "deepseek-v4-flash",
+    });
+
+    const assembledText = JSON.stringify(reset.messages);
+    const stats = engine.getCacheStats();
+    expect(assembledText).not.toContain("old root");
+    expect(assembledText).toContain("new root");
+    expect(stats.prefixResetCount).toBe(1);
+    expect(stats.lastPrefixResetReason).toBe("incoming prefix changed");
   });
 
   test("old tool results are trimmed with a marker while recent tool results stay intact", async () => {

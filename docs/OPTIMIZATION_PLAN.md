@@ -15,6 +15,9 @@ Implemented optimizations for ReasoniXlaw while keeping the existing model detec
 | Structured summaries | Implemented | Summary prompt preserves goal, decisions, files, commands, errors, and next step |
 | Sidecar state | Implemented | Layer state persists to `<sessionFile>.reasonixlaw-state.json`; legacy `<sessionFile>.deepseek-harness-state.json` files still restore |
 | Tool-result trimming | Implemented | Older tool results are trimmed with an explicit length marker |
+| Runtime context isolation | Implemented | `openclaw.runtime-context` custom messages are current-turn only and excluded from sidecar state |
+| Prompt-cache telemetry | Implemented | `afterTurn()` records the latest PI `promptCache` payload and break codes in `getCacheStats()` |
+| Prefix versioning | Implemented | Incoming same-session prefix divergence resets and re-locks the visible projection |
 | Tests | Implemented | `tests/context-engine.test.ts` covers the behaviors above and manifest fields |
 
 The `deepseek-harness` name remains only as a legacy config fallback and legacy sidecar read fallback. New local artifacts use the `reasonixlaw` project id.
@@ -93,13 +96,46 @@ The `deepseek-harness` name remains only as a legacy config fallback and legacy 
 - Only trim older tail messages outside the recent kept window.
 - Preserve tool result identity fields and text content shape.
 
-## 8. Documentation and Tests
+## 8. Runtime Context Isolation
+
+**Principle:** Dynamic host context should help the current turn without becoming part of the locked cache prefix.
+
+**Technical measures:**
+
+- Detect OpenClaw custom runtime context messages with `role: "custom"` and `customType: "openclaw.runtime-context"`.
+- Filter those messages out before prefix/tail diffing, compaction summaries, and sidecar persistence.
+- Reinsert only the current runtime custom messages immediately before the active user message in the assembled prompt.
+- Extend text extraction and token estimation to understand custom text content when those messages are present in the current assembled prompt.
+
+## 9. Real Prompt-Cache Telemetry
+
+**Principle:** Local token ratios are useful estimates, but cache hit/miss truth comes from PI/provider telemetry.
+
+**Technical measures:**
+
+- Add `afterTurn()` handling for `ContextEngineRuntimeContext.promptCache`.
+- Persist the latest prompt-cache payload in in-memory state and the session sidecar.
+- Expose `promptCache` and flattened `promptCacheBreakCodes` via `getCacheStats()`.
+- Keep `cacheHitEstimate` as a local layer-shape estimate, not a replacement for provider telemetry.
+
+## 10. Same-Session Prefix Versioning
+
+**Principle:** Per-session prefix stability should not pretend a cache hit is possible after the visible prefix changes.
+
+**Technical measures:**
+
+- Fingerprint the locked ContextEngine-visible prefix using stable message fields: role, content, tool identity, and custom type.
+- Compare the incoming stable transcript prefix on each `assemble()` call.
+- When the incoming prefix diverges, clear the old projection, reset compaction state, lock the new prefix, and increment reset stats.
+- Preserve the new prefix for subsequent turns instead of chasing cross-session stability.
+
+## 11. Documentation and Tests
 
 **Principle:** The plugin should explain the cache/accuracy tradeoff and make the intended behavior executable.
 
 **Technical measures:**
 
-- Add tests for token-aware tail selection, stuck guard, summary recompaction, sidecar persistence, and manifest kind.
+- Add tests for token-aware tail selection, stuck guard, summary recompaction, sidecar persistence, runtime context isolation, prompt-cache telemetry, prefix reset, and manifest kind.
 - Update README and architecture docs with the new tradeoffs and tuning knobs.
 
 ## Operational Costs and Failure Modes
@@ -111,6 +147,8 @@ The `deepseek-harness` name remains only as a legacy config fallback and legacy 
 - **Local retention:** Archives and sidecars keep local context data. `archiveDropped: false` disables dropped-message archives, but sidecar state remains part of restart recovery.
 - **Trimmed evidence:** Old tool results can be shortened. The marker records original length and retained length so the model can see that evidence was truncated.
 - **Paused compaction:** `compactStuck` prevents repeated failed compactions from burning turns. It also means the host may need to apply another pressure strategy if the prompt is still too large.
+- **Runtime envelope boundary:** Hidden system prompt, tool schemas, and PI runtime envelope are controlled by OpenClaw/PI. ReasoniXlaw optimizes the same-session message projection it receives.
+- **Prefix reset miss:** When the visible prefix changes inside a session, the plugin resets and re-locks. That is expected to cost one cache miss, then stabilize.
 
 ## Verification Commands
 

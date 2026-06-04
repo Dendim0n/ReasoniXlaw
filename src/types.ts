@@ -13,6 +13,16 @@ export type { AgentMessage };
 
 // Helper type for tool call content blocks in AssistantMessage
 type ToolCallBlock = { type: "toolCall"; id: string; name: string; arguments: Record<string, unknown> };
+type TextContentBlock = { type: string; text?: string };
+
+function extractTextContent(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((p): p is TextContentBlock => typeof p === "object" && p !== null && (p as TextContentBlock).type === "text")
+    .map((p) => p.text ?? "")
+    .join("");
+}
 
 // ── Configuration ───────────────────────────────────────────────────────────
 
@@ -73,24 +83,16 @@ export function estimateTextTokens(text: string): number {
 /** Extract text content from any AgentMessage variant. */
 export function extractContent(msg: AgentMessage): string {
   if (msg.role === "user") {
-    const content = msg.content;
-    if (typeof content === "string") return content;
-    return content
-      .filter((p: { type: string }) => p.type === "text")
-      .map((p: { type: string; text?: string }) => p.text ?? "")
-      .join("");
+    return extractTextContent(msg.content);
   }
   if (msg.role === "assistant") {
-    return msg.content
-      .filter((p: { type: string }) => p.type === "text")
-      .map((p: { type: string; text?: string }) => p.text ?? "")
-      .join("");
+    return extractTextContent(msg.content);
   }
   if (msg.role === "toolResult") {
-    return msg.content
-      .filter((p: { type: string }) => p.type === "text")
-      .map((p: { type: string; text?: string }) => p.text ?? "")
-      .join("");
+    return extractTextContent(msg.content);
+  }
+  if ((msg as unknown as { role?: string }).role === "custom") {
+    return extractTextContent((msg as unknown as { content?: unknown }).content);
   }
   return "";
 }

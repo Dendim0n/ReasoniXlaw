@@ -25,7 +25,7 @@ DeepSeek 的 API 提供 **prefix 缓存**：如果你的请求开头与前一次
 ```
 ┌─────────────────────────────────────┐
 │  层 1：锁定 PREFIX                  │  ← 永远不变。缓存在这里命中。
-│  系统 prompt + 早期历史             │
+│  ContextEngine 可见的早期历史       │
 ├─────────────────────────────────────┤
 │  层 2：活跃 TAIL                    │  ← 压缩之间只追加。
 │  最近的消息                         │
@@ -35,8 +35,13 @@ DeepSeek 的 API 提供 **prefix 缓存**：如果你的请求开头与前一次
 └─────────────────────────────────────┘
 ```
 
-压缩只动中间层。prefix **永远不会被修改**。
-DeepSeek 每轮看到相同的开头 → 缓存命中 → 省 90% 费用。
+压缩只动中间层。锁定 prefix 在同一个 session 内保持稳定，所以 DeepSeek
+每轮都会看到相同的 ContextEngine 可见 prompt 开头。
+
+真正的 system prompt、tools schema 和底层 runtime 注入仍由 OpenClaw/PI
+控制。ReasoniXlaw 稳定的是它收到的 messages 投影，并把 OpenClaw 的
+`openclaw.runtime-context` custom message 当作当前轮临时上下文，而不是
+持久对话历史。
 
 ## 架构
 
@@ -51,7 +56,7 @@ DeepSeek 每轮看到相同的开头 → 缓存命中 → 省 90% 费用。
 | 重试 & 降级 | OpenClaw PI |
 | 对话持久化 | OpenClaw PI |
 | reasoning effort | PI 直接透传给 DeepSeek |
-| 缓存统计 | 通过 `ContextEngineRuntimeContext.promptCache` 获取 |
+| 缓存统计 | PI 暴露 `ContextEngineRuntimeContext.promptCache`，本插件记录最近一次遥测 |
 
 我们在 PI 执行循环的正确节点（`assemble`、`compact`）插入逻辑，其他一切都交给 PI 处理。没有自建 HTTP client，没有 tool bridge，没有 auth 处理。
 
@@ -142,7 +147,7 @@ npm run build
 
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
-| `prefixLockCount` | 2 | 锁定到 prefix 层的消息数 |
+| `prefixLockCount` | 2 | 锁定到 prefix 层的 ContextEngine 可见消息数 |
 | `recentKeepCount` | 8 | 在 tail 中至少保留的最近消息数 |
 | `tailTokenBudget` | 16384 | 用于保留更多最近 tail 消息的 token 预算 |
 | `compactRatio` | 0.8 | 触发压缩的上下文比例 |
@@ -154,7 +159,7 @@ npm run build
 
 #### `prefixLockCount`（默认：2）
 
-锁进 prefix 层的消息数。这 2 条消息（通常是 system prompt + 第一条用户消息）**永远不变**，是 DeepSeek 缓存命中的核心。设太大浪费 context 空间，设太小锁不住足够的 prefix。一般 2 就够了。
+锁进 prefix 层的 ContextEngine 可见消息数。在当前 OpenClaw/PI 接线下，这通常是最早的用户/助手对话，而不是隐藏的 system prompt。设太大浪费 context 空间，设太小锁不住足够的 prefix。对同 session 稳定性来说，一般 2 就够了。
 
 #### `recentKeepCount`（默认：8）
 
@@ -192,11 +197,13 @@ tail 层至少保留的最近消息数。这些消息在压缩时不被摘要，
 
 ## 工作原理
 
-1. **首次 `assemble()` 调用**：系统 prompt + 前 N 条消息 → 锁入 Layer 1（prefix）
+1. **首次 `assemble()` 调用**：ContextEngine 可见的前 N 条稳定消息 → 锁入 Layer 1（prefix）
 2. **后续调用**：新消息 → 只追加到 Layer 2（tail）
-3. **压缩**：上下文填满时 → token-aware tail 选择 + 结构化中间摘要 → prefix 保持稳定
-4. **DeepSeek 看到相同的开头** → 缓存 token 按 10% 计费
-5. **循环保护**：如果连续压缩仍无法降到阈值以下，自动压缩会暂停，避免浪费轮次
+3. **runtime context**：当前轮的 `openclaw.runtime-context` custom message 会重新插入到 active user 前，但不会进入 prefix、tail、压缩摘要或 sidecar
+4. **压缩**：上下文填满时 → token-aware tail 选择 + 结构化中间摘要 → prefix 保持稳定
+5. **prefix 版本化**：如果同 session 传入的 transcript prefix 发生分歧，引擎会重置并锁定新的投影，而不是继续假装旧 prefix 仍然有效
+6. **缓存遥测**：每轮结束后，如果 PI 提供 `promptCache`，会记录到 stats
+7. **循环保护**：如果连续压缩仍无法降到阈值以下，自动压缩会暂停，避免浪费轮次
 
 ## 关键设计决策
 
@@ -226,12 +233,16 @@ PI 的 model transport（`params.model`）已经：
 - DeepSeek prefix cache 命中时，输入成本更低。
 - prefix 在压缩时不被改写，缓存命中概率更高。
 - 最近 tail 按 token 预算选择，旧工具输出可先裁剪，减少上下文抖动。
+- OpenClaw 注入的 runtime context 只作用于当前轮，不会积累进锁定投影或 sidecar。
 - 当 OpenClaw 提供稳定 `sessionFile` 时，层状态会写入 `<sessionFile>.reasonixlaw-state.json`。已有的 `<sessionFile>.deepseek-harness-state.json` 仍会作为旧格式 fallback 读取。
-- 不重复造 transport。认证、工具、流式、重试、对话持久化和缓存统计仍由 PI 负责。
+- 不重复造 transport。认证、工具、流式、重试、对话持久化和 provider 缓存遥测仍由 PI 负责。
+- `getCacheStats()` 同时报告本地层 token 估算，以及 PI 暴露的最近一次真实 `promptCache` 数据。
 
 代价：
 
 - 锁定 prefix 不容易改变。如果最早几条消息质量差，它们会一直留在可缓存 prefix 中，直到重开会话。
+- ReasoniXlaw 当前不拥有也不改写隐藏的 system prompt、tools schema 或 PI runtime envelope；它优化的是 OpenClaw 传给它的同 session message prefix。
+- prefix reset/versioning 会在传入 transcript prefix 改变时接受一次 miss，然后稳定到新的投影。
 - 摘要是有损的。结构化 prompt 会尽量保留操作状态，但细节仍可能丢失。
 - 有 runtime LLM 可用时，压缩会增加一次小模型调用和延迟。抽取式 fallback 更便宜，但精度更低。
 - token 估算是 CJK-aware 字符估算，不是 provider tokenizer 的精确值。

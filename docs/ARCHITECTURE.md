@@ -8,6 +8,10 @@ context management for DeepSeek-compatible target models.
 It does NOT replace PI's execution loop. It plugs into the ContextEngine
 interface at two points: `assemble()` and `compact()`.
 
+The engine stabilizes the transcript projection that OpenClaw passes through
+the ContextEngine interface. The hidden system prompt, tool schema, and PI
+runtime envelope remain owned by OpenClaw/PI.
+
 ## Runtime Contract
 
 | Contract | Current value | Notes |
@@ -32,9 +36,12 @@ User sends message
   ├─ OpenClaw Gateway receives message
   │
   ├─ PI agent loop starts
+  │   ├─ PI may inject current runtime context as custom messages
+  │   │   └─ THIS PLUGIN: keeps only current-turn runtime context ephemeral
+  │   │
   │   ├─ ContextEngine.assemble(messages, tokenBudget)
   │   │   └─ THIS PLUGIN: prefix-stable layer management
-  │   │       ├─ Layer 1: LOCKED PREFIX (system + early history)
+  │   │       ├─ Layer 1: LOCKED PREFIX (ContextEngine-visible early transcript)
   │   │       ├─ Layer 2: ACTIVE TAIL (recent messages, append-only)
   │   │       └─ Layer 3: COMPRESSED MIDDLE (summary, only layer that changes)
   │   │
@@ -59,17 +66,18 @@ User sends message
 | File | Lines | Purpose |
 |------|-------|---------|
 | `src/types.ts` | ~120 | Config types, token estimation (CJK-aware) |
-| `src/context-engine.ts` | ~700 | ContextEngine implementation (core) |
+| `src/context-engine.ts` | ~850 | ContextEngine implementation (core) |
 | `src/index.ts` | 59 | Plugin entry — registers engine with OpenClaw |
-| `tests/context-engine.test.ts` | ~450 | Unit tests |
+| `tests/context-engine.test.ts` | ~700 | Unit tests |
 
 ## ContextEngine Methods Used
 
 | Method | When Called | What We Do |
 |--------|-----------|------------|
 | `bootstrap()` | Session init | Store session ID, set up archive dir, restore in-memory or sidecar state |
-| `assemble()` | Before every model call | Build prefix+summary+tail, diff new messages |
+| `assemble()` | Before every model call | Split runtime custom messages, build prefix+summary+tail, diff new stable messages |
 | `compact()` | When context nears limit | Token-budget tail selection, structured middle summary, stuck-loop guard |
+| `afterTurn()` | After model call | Record latest PI `promptCache` telemetry when available |
 | `maintain()` | After turns | No-op (future: periodic cleanup) |
 | `ingest()` | Per-message tracking | No-op (assemble handles diffing) |
 | `dispose()` | Plugin unload | Save in-memory and sidecar state |
@@ -91,6 +99,7 @@ Rules:
 6. Trim older tool results with an explicit marker, leaving recent tool results intact
 7. Pause automatic compaction after repeated compactions fail to get below threshold
 8. Prefix messages are locked once and not re-derived during later compactions
+9. If the incoming same-session prefix diverges, reset the projection and lock the new prefix
 
 Layer state is also written to a small sidecar next to the OpenClaw session file:
 
@@ -99,11 +108,38 @@ Layer state is also written to a small sidecar next to the OpenClaw session file
 ```
 
 The sidecar contains only the context-engine projection state: prefix, tail,
-summary, ingest counters, last model, and compaction statistics. It lets the
-engine recover prefix-stable layers after process restarts when the host supplies
-a stable session file path. On bootstrap, the engine first tries the new
-ReasoniXlaw sidecar and then falls back to the legacy
+summary, ingest counters, last model, compaction statistics, prefix fingerprint,
+prefix reset counters, and the last PI prompt-cache telemetry payload. It lets
+the engine recover prefix-stable layers after process restarts when the host
+supplies a stable session file path. On bootstrap, the engine first tries the
+new ReasoniXlaw sidecar and then falls back to the legacy
 `<sessionFile>.deepseek-harness-state.json` file.
+
+Runtime context custom messages are deliberately excluded from sidecar state.
+
+## Runtime Context Handling
+
+OpenClaw currently represents dynamic runtime context as custom messages:
+
+```json
+{
+  "role": "custom",
+  "customType": "openclaw.runtime-context"
+}
+```
+
+These messages may contain date, workspace, session, dynamic project context,
+or other host-owned information that can change between turns. ReasoniXlaw
+therefore treats them as current-turn context:
+
+- all runtime custom messages are removed from the stable projection before
+  prefix/tail diffing, compaction, and persistence
+- the custom messages immediately preceding the active user message are
+  reinserted into the assembled prompt before that user message
+- historical runtime custom messages are not accumulated across turns
+
+This preserves PI's current-turn runtime hints without letting volatile host
+state poison the locked prefix or durable sidecar.
 
 ## Configuration Surface
 
@@ -134,10 +170,15 @@ knobs that are not listed in the schema.
 - `consecutiveOverThresholdCompactions`
 - `compactStuck`
 - `lastCompactionTokensBefore`, `lastCompactionTokensAfter`
+- `prefixResetCount`, `lastPrefixResetReason`
+- `promptCache`, the latest `ContextEngineRuntimeContext.promptCache` payload
+- `promptCacheBreakCodes`, a flattened list of provider cache observation change codes
 
-These numbers are estimates. They use the local CJK-aware token estimator in
-`src/types.ts`, not the provider tokenizer. Treat them as operational signals,
-not billing-grade accounting.
+Layer token numbers are estimates. They use the local CJK-aware token estimator
+in `src/types.ts`, not the provider tokenizer. Treat local layer estimates as
+operational signals, not billing-grade accounting. When PI provides
+`promptCache`, that payload is the provider-facing cache telemetry for the last
+turn.
 
 ## Tradeoffs
 
@@ -154,6 +195,11 @@ Costs:
 
 - Early messages become sticky. If the session starts with bad instructions or
   stale assumptions, those messages stay in the prefix until a new session.
+- The hidden system prompt, tools schema, and PI runtime envelope are outside
+  this plugin's direct control. ReasoniXlaw only stabilizes the messages it
+  receives through `assemble()`.
+- Prefix divergence inside a session causes one reset and likely one cache miss,
+  then the new visible prefix becomes stable.
 - Summaries are lossy even when structured. The prompt preserves state, files,
   commands, errors, and next steps, but exact detail can still be dropped.
 - Runtime LLM summarization adds latency and token cost during compaction. The

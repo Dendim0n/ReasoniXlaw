@@ -5,7 +5,7 @@
  * Uses native AgentMessage type (UserMessage | AssistantMessage | ToolResultMessage).
  *
  * Three layers:
- *   Layer 1 — LOCKED PREFIX (system + early history, never changes)
+ *   Layer 1 — LOCKED PREFIX (ContextEngine-visible early transcript)
  *   Layer 2 — ACTIVE TAIL (recent messages, append-only between compactions)
  *   Layer 3 — COMPRESSED MIDDLE (summary of older messages, only layer that changes)
  */
@@ -44,6 +44,7 @@ const log = createSubsystemLogger(ARTIFACT_ID);
 const STATE_SIDECAR_SUFFIX = `.${ARTIFACT_ID}-state.json`;
 const LEGACY_STATE_SIDECAR_SUFFIX = `.${LEGACY_ARTIFACT_ID}-state.json`;
 const STATE_SIDECAR_VERSION = 1;
+const OPENCLAW_RUNTIME_CONTEXT_CUSTOM_TYPE = "openclaw.runtime-context";
 const SUMMARY_TAG_OPEN = "<compaction-summary>";
 const SUMMARY_TAG_CLOSE = "</compaction-summary>";
 const SUMMARY_HEADING_PROMPT = `Write a terse briefing under these exact headings, omitting a heading only if it has no content:
@@ -125,6 +126,59 @@ function fallbackSummary(messages: AgentMessage[]): string {
   return parts.join("\n\n") || "(conversation segment archived)";
 }
 
+function isRuntimeContextCustomMessage(message: AgentMessage): boolean {
+  const candidate = message as unknown as { role?: string; customType?: string };
+  return candidate.role === "custom" && candidate.customType === OPENCLAW_RUNTIME_CONTEXT_CUSTOM_TYPE;
+}
+
+function stableMessagesOnly(messages: AgentMessage[]): AgentMessage[] {
+  return messages.filter((message) => !isRuntimeContextCustomMessage(message));
+}
+
+function findLastUserIndex(messages: AgentMessage[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "user") return i;
+  }
+  return -1;
+}
+
+function currentRuntimeContextMessages(messages: AgentMessage[]): AgentMessage[] {
+  const lastUserIndex = findLastUserIndex(messages);
+  if (lastUserIndex === -1) return [];
+
+  const current: AgentMessage[] = [];
+  for (let i = lastUserIndex - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (!isRuntimeContextCustomMessage(message)) break;
+    current.unshift(message);
+  }
+  return current;
+}
+
+function insertBeforeActiveUser(messages: AgentMessage[], insertions: AgentMessage[]): AgentMessage[] {
+  if (insertions.length === 0) return messages;
+  const result = [...messages];
+  const lastUserIndex = findLastUserIndex(result);
+  const insertIndex = lastUserIndex === -1 ? result.length : lastUserIndex;
+  result.splice(insertIndex, 0, ...insertions);
+  return result;
+}
+
+function fingerprintMessage(message: AgentMessage): unknown {
+  const record = message as unknown as Record<string, unknown>;
+  return {
+    role: record.role,
+    content: record.content,
+    toolCallId: record.toolCallId,
+    toolName: record.toolName,
+    customType: record.customType,
+  };
+}
+
+function fingerprintMessages(messages: AgentMessage[]): string {
+  return JSON.stringify(messages.map(fingerprintMessage));
+}
+
 // ── Model detection ─────────────────────────────────────────────────────────
 
 /**
@@ -160,6 +214,11 @@ interface SessionLayers {
   compactStuck: boolean;
   lastCompactionTokensBefore: number | null;
   lastCompactionTokensAfter: number | null;
+  prefixFingerprint: string | null;
+  prefixResetCount: number;
+  lastPrefixResetReason: string | null;
+  promptCache: ContextEngineRuntimeContext["promptCache"] | null;
+  promptCacheBreakCodes: string[];
 }
 
 const sessionStateMap = new Map<string, SessionLayers>();
@@ -203,6 +262,11 @@ export class DeepSeekContextEngine implements ContextEngine {
   private compactStuck = false;
   private lastCompactionTokensBefore: number | null = null;
   private lastCompactionTokensAfter: number | null = null;
+  private prefixFingerprint: string | null = null;
+  private prefixResetCount = 0;
+  private lastPrefixResetReason: string | null = null;
+  private promptCache: ContextEngineRuntimeContext["promptCache"] | null = null;
+  private promptCacheBreakCodes: string[] = [];
 
   // Session file path used for durable layer sidecar state
   private sessionFile: string | null = null;
@@ -230,6 +294,11 @@ export class DeepSeekContextEngine implements ContextEngine {
       compactStuck: this.compactStuck,
       lastCompactionTokensBefore: this.lastCompactionTokensBefore,
       lastCompactionTokensAfter: this.lastCompactionTokensAfter,
+      prefixFingerprint: this.prefixFingerprint,
+      prefixResetCount: this.prefixResetCount,
+      lastPrefixResetReason: this.lastPrefixResetReason,
+      promptCache: this.promptCache,
+      promptCacheBreakCodes: this.promptCacheBreakCodes,
     });
     log.info(`[${ARTIFACT_ID}] saveState: sessionId=${this.sessionId}, prefix=${this.prefix.length}, tail=${this.tail.length}`);
   }
@@ -245,6 +314,11 @@ export class DeepSeekContextEngine implements ContextEngine {
     this.compactStuck = saved.compactStuck ?? false;
     this.lastCompactionTokensBefore = saved.lastCompactionTokensBefore ?? null;
     this.lastCompactionTokensAfter = saved.lastCompactionTokensAfter ?? null;
+    this.prefixFingerprint = saved.prefixFingerprint ?? (this.prefix.length > 0 ? fingerprintMessages(this.prefix) : null);
+    this.prefixResetCount = saved.prefixResetCount ?? 0;
+    this.lastPrefixResetReason = saved.lastPrefixResetReason ?? null;
+    this.promptCache = saved.promptCache ?? null;
+    this.promptCacheBreakCodes = saved.promptCacheBreakCodes ?? [];
   }
 
   private restoreState(sessionId: string): boolean {
@@ -341,6 +415,11 @@ export class DeepSeekContextEngine implements ContextEngine {
       this.compactStuck = false;
       this.lastCompactionTokensBefore = null;
       this.lastCompactionTokensAfter = null;
+      this.prefixFingerprint = null;
+      this.prefixResetCount = 0;
+      this.lastPrefixResetReason = null;
+      this.promptCache = null;
+      this.promptCacheBreakCodes = [];
     }
 
     log.info(`[${ARTIFACT_ID}] bootstrap: sessionId=${params.sessionId}, prefix=${this.prefix.length}, tail=${this.tail.length}`);
@@ -365,6 +444,26 @@ export class DeepSeekContextEngine implements ContextEngine {
     return { ingestedCount: _params.messages.length };
   }
 
+  async afterTurn(params: {
+    sessionId: string;
+    sessionKey?: string;
+    sessionFile: string;
+    messages: AgentMessage[];
+    prePromptMessageCount: number;
+    autoCompactionSummary?: string;
+    isHeartbeat?: boolean;
+    tokenBudget?: number;
+    runtimeContext?: ContextEngineRuntimeContext;
+  }): Promise<void> {
+    const promptCache = params.runtimeContext?.promptCache;
+    if (!promptCache) return;
+
+    this.promptCache = promptCache;
+    this.promptCacheBreakCodes = promptCache.observation?.changes?.map((change) => change.code) ?? [];
+    this.saveState();
+    await this.persistStateSidecar();
+  }
+
   // ── Assemble (core method — called before every prompt) ───────────────────
 
   async assemble(params: {
@@ -378,6 +477,8 @@ export class DeepSeekContextEngine implements ContextEngine {
     prompt?: string;
   }): Promise<AssembleResult> {
     const { messages, tokenBudget, model } = params;
+    const stableMessages = stableMessagesOnly(messages);
+    const runtimeMessages = currentRuntimeContextMessages(messages);
 
     // Non-target model: pass through unchanged
     if (!isDeepSeekModel(model, this.config.targetModels)) {
@@ -386,27 +487,26 @@ export class DeepSeekContextEngine implements ContextEngine {
       return { messages, estimatedTokens: estimateTotalTokens(messages) };
     }
     this.lastModel = model;
-    log.info(`[${ARTIFACT_ID}] assemble: model=${model}, prefix-stable active (messages=${messages.length}, prefix=${this.prefix.length}, tail=${this.tail.length})`);
+    log.info(`[${ARTIFACT_ID}] assemble: model=${model}, prefix-stable active (messages=${stableMessages.length}, prefix=${this.prefix.length}, tail=${this.tail.length})`);
 
     // First call: split into prefix + tail
-    if (this.prefix.length === 0 && messages.length > 0) {
-      const lockIdx = Math.min(this.config.prefixLockCount, messages.length);
-      this.prefix = messages.slice(0, lockIdx);
-      this.tail = messages.slice(lockIdx);
-      this.ingestedCount = messages.length;
-    } else if (messages.length >= this.ingestedCount) {
+    if (this.prefix.length === 0 && stableMessages.length > 0) {
+      this.lockProjection(stableMessages);
+    } else if (this.shouldResetPrefix(stableMessages)) {
+      this.resetProjection(stableMessages, "incoming prefix changed");
+    } else if (stableMessages.length >= this.ingestedCount) {
       // Normal growth: append only new messages to tail
-      const newCount = messages.length - this.ingestedCount;
+      const newCount = stableMessages.length - this.ingestedCount;
       if (newCount > 0) {
-        const newMessages = messages.slice(this.ingestedCount);
+        const newMessages = stableMessages.slice(this.ingestedCount);
         this.tail = [...this.tail, ...newMessages];
-        this.ingestedCount = messages.length;
+        this.ingestedCount = stableMessages.length;
       }
     }
     // messages.length < this.ingestedCount → ignore (PI may pass subsets
     // for mid-turn operations like tool results; the tail already covers them)
 
-    const assembled = this.compose();
+    const assembled = this.compose(runtimeMessages);
     const estimatedTokens = estimateTotalTokens(assembled);
 
     // Pre-trim old tool results to delay full compaction
@@ -423,13 +523,44 @@ export class DeepSeekContextEngine implements ContextEngine {
     await this.persistStateSidecar();
 
     return {
-      messages: this.compose(),
-      estimatedTokens: estimateTotalTokens(this.compose()),
+      messages: this.compose(runtimeMessages),
+      estimatedTokens: estimateTotalTokens(this.compose(runtimeMessages)),
     };
   }
 
+  private lockProjection(messages: AgentMessage[]): void {
+    const lockIdx = Math.min(this.config.prefixLockCount, messages.length);
+    this.prefix = messages.slice(0, lockIdx);
+    this.tail = messages.slice(lockIdx);
+    this.ingestedCount = messages.length;
+    this.prefixFingerprint = fingerprintMessages(this.prefix);
+  }
+
+  private shouldResetPrefix(messages: AgentMessage[]): boolean {
+    if (this.prefix.length === 0 || messages.length < this.prefix.length || !this.prefixFingerprint) {
+      return false;
+    }
+    return fingerprintMessages(messages.slice(0, this.prefix.length)) !== this.prefixFingerprint;
+  }
+
+  private resetProjection(messages: AgentMessage[], reason: string): void {
+    this.prefixResetCount++;
+    this.lastPrefixResetReason = reason;
+    this.tail = [];
+    this.compressedSummary = null;
+    this.ingestedCount = 0;
+    this.compactionCount = 0;
+    this.consecutiveOverThresholdCompactions = 0;
+    this.compactStuck = false;
+    this.lastCompactionTokensBefore = null;
+    this.lastCompactionTokensAfter = null;
+    this.promptCache = null;
+    this.promptCacheBreakCodes = [];
+    this.lockProjection(messages);
+  }
+
   /** Compose the three layers into the final message array. */
-  private compose(): AgentMessage[] {
+  private compose(runtimeMessages: AgentMessage[] = []): AgentMessage[] {
     const result: AgentMessage[] = [...this.prefix];
 
     if (this.compressedSummary) {
@@ -443,7 +574,7 @@ export class DeepSeekContextEngine implements ContextEngine {
     }
 
     result.push(...this.tail);
-    return result;
+    return insertBeforeActiveUser(result, runtimeMessages);
   }
 
   /**
@@ -697,6 +828,10 @@ export class DeepSeekContextEngine implements ContextEngine {
     compactStuck: boolean;
     lastCompactionTokensBefore: number | null;
     lastCompactionTokensAfter: number | null;
+    prefixResetCount: number;
+    lastPrefixResetReason: string | null;
+    promptCache: ContextEngineRuntimeContext["promptCache"] | null;
+    promptCacheBreakCodes: string[];
   } {
     const prefixTokens = estimateTotalTokens(this.prefix);
     const tailTokens = estimateTotalTokens(this.tail);
@@ -715,6 +850,10 @@ export class DeepSeekContextEngine implements ContextEngine {
       compactStuck: this.compactStuck,
       lastCompactionTokensBefore: this.lastCompactionTokensBefore,
       lastCompactionTokensAfter: this.lastCompactionTokensAfter,
+      prefixResetCount: this.prefixResetCount,
+      lastPrefixResetReason: this.lastPrefixResetReason,
+      promptCache: this.promptCache,
+      promptCacheBreakCodes: this.promptCacheBreakCodes,
     };
   }
 }

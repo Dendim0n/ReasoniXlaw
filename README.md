@@ -25,7 +25,7 @@ A **ContextEngine plugin** that manages context in three layers:
 ```
 ┌─────────────────────────────────────┐
 │  Layer 1: LOCKED PREFIX             │  ← Never modified. Cache hits here.
-│  System prompt + early history      │
+│  ContextEngine-visible early history│
 ├─────────────────────────────────────┤
 │  Layer 2: ACTIVE TAIL               │  ← Append-only between compactions.
 │  Recent messages                    │
@@ -35,8 +35,14 @@ A **ContextEngine plugin** that manages context in three layers:
 └─────────────────────────────────────┘
 ```
 
-Compaction only touches the middle layer. The prefix is **never modified**.
-DeepSeek sees the same prefix every turn → cache hit → 90% cost reduction.
+Compaction only touches the middle layer. The locked prefix is stable inside a
+session, so DeepSeek keeps seeing the same ContextEngine-visible beginning of
+the prompt across turns.
+
+OpenClaw/PI still owns the true system prompt, tool schema, and low-level
+runtime injection. ReasoniXlaw stabilizes the message projection it receives,
+and treats OpenClaw's `openclaw.runtime-context` custom messages as ephemeral
+current-turn context rather than persistent conversation history.
 
 ## Architecture
 
@@ -51,7 +57,7 @@ This is a **ContextEngine plugin**, not an AgentHarness. That means:
 | Retries & fallback | OpenClaw PI |
 | Transcript persistence | OpenClaw PI |
 | Reasoning effort | PI passes through to DeepSeek (your config has `supportsReasoningEffort: true`) |
-| Cache stats | Available via `ContextEngineRuntimeContext.promptCache` |
+| Cache stats | PI exposes `ContextEngineRuntimeContext.promptCache`; this plugin records the latest telemetry |
 
 We plug into PI's execution loop at the right points (`assemble`, `compact`) and
 let PI handle everything else. No custom HTTP client, no tool bridge, no auth handling.
@@ -145,7 +151,7 @@ The context engine reads config from the plugin entry:
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `prefixLockCount` | 2 | Messages to lock into prefix layer |
+| `prefixLockCount` | 2 | ContextEngine-visible messages to lock into prefix layer |
 | `recentKeepCount` | 8 | Minimum recent messages to keep verbatim in tail |
 | `tailTokenBudget` | 16384 | Token budget for keeping additional recent tail messages |
 | `compactRatio` | 0.8 | Context ratio that triggers compaction |
@@ -157,7 +163,7 @@ The context engine reads config from the plugin entry:
 
 #### `prefixLockCount` (default: 2)
 
-Number of messages locked into the prefix layer. These 2 messages (typically the system prompt + first user message) **never change** — they're the core of DeepSeek's cache hit. Too large wastes context space; too small doesn't lock enough prefix. 2 is usually sufficient.
+Number of ContextEngine-visible messages locked into the prefix layer. In current OpenClaw/PI wiring this is usually the earliest user/assistant transcript, not the hidden system prompt. Too large wastes context space; too small doesn't lock enough prefix. 2 is usually sufficient for same-session stability.
 
 #### `recentKeepCount` (default: 8)
 
@@ -195,11 +201,13 @@ Additional model-name patterns that trigger prefix-stable mode. Any model string
 
 ## How It Works
 
-1. **First `assemble()` call**: System prompt + first N messages → locked into Layer 1 (prefix)
+1. **First `assemble()` call**: First N stable messages visible to the ContextEngine → locked into Layer 1 (prefix)
 2. **Subsequent calls**: New messages → appended to Layer 2 (tail) only
-3. **Compaction**: When context fills → token-aware tail selection + structured middle summary → prefix stays stable
-4. **DeepSeek sees identical prefix** → cached tokens at 10% price
-5. **Loop guard**: If repeated compactions cannot reduce context below threshold, auto-compaction pauses instead of wasting turns
+3. **Runtime context**: Current `openclaw.runtime-context` custom messages are reinserted before the active user message, but excluded from prefix, tail, compaction summaries, and sidecar state
+4. **Compaction**: When context fills → token-aware tail selection + structured middle summary → prefix stays stable
+5. **Prefix versioning**: If the incoming same-session prefix diverges, the engine resets and locks the new projection instead of pretending the old prefix still applies
+6. **Telemetry**: After a turn, PI's `promptCache` telemetry is stored in stats when available
+7. **Loop guard**: If repeated compactions cannot reduce context below threshold, auto-compaction pauses instead of wasting turns
 
 ## Key Design Decisions
 
@@ -229,12 +237,16 @@ What improves:
 - Lower input cost when DeepSeek prefix cache hits the locked prefix.
 - Higher cache hit probability because the prefix is not rewritten during compaction.
 - Less context churn because recent tail selection is token-aware and old tool output can be trimmed before full compaction.
+- Runtime context injected by OpenClaw is current-turn only, so dynamic workspace/date/session material does not accumulate in the locked projection or sidecar.
 - Better restart behavior when OpenClaw provides a stable `sessionFile`, because layer state is also persisted to `<sessionFile>.reasonixlaw-state.json`. Existing `<sessionFile>.deepseek-harness-state.json` files are still read as a legacy fallback.
-- No duplicated transport code. PI still owns auth, tools, streaming, retries, transcript persistence, and cache telemetry.
+- No duplicated transport code. PI still owns auth, tools, streaming, retries, transcript persistence, and provider cache telemetry.
+- `getCacheStats()` reports both local layer estimates and the latest real `promptCache` payload exposed by PI.
 
 What it costs:
 
 - The locked prefix is deliberately hard to change. If the first messages are poor, they stay in the cacheable prefix until the session is reset.
+- ReasoniXlaw does not currently own or rewrite the hidden system prompt, tool schema, or PI runtime envelope. It optimizes the same-session message prefix it receives from OpenClaw.
+- Prefix reset/versioning accepts one miss when the incoming transcript prefix changes, then stabilizes on the new projection.
 - Summaries are lossy. The structured prompt preserves operational state, but fine-grained detail can still be lost.
 - Compaction can add latency and a small extra model call when runtime LLM summarization is available. The extractive fallback is cheaper but less precise.
 - Token estimates are approximate, CJK-aware character estimates, not provider tokenizer counts.
