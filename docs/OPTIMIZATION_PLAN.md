@@ -13,11 +13,11 @@ Implemented optimizations for ReasoniXlaw while keeping the existing model detec
 | Token-aware tail | Implemented | `findTokenAwareTailBoundary()` keeps recent messages by token budget and safe boundaries |
 | Stuck guard | Implemented | Repeated over-threshold compactions set `compactStuck` and pause automatic compaction |
 | Structured summaries | Implemented | Summary prompt preserves goal, decisions, files, commands, errors, and next step |
-| Sidecar state | Implemented | Layer state persists to `<sessionFile>.deepseek-harness-state.json` |
+| Sidecar state | Implemented | Layer state persists to `<sessionFile>.reasonixlaw-state.json`; legacy `<sessionFile>.deepseek-harness-state.json` files still restore |
 | Tool-result trimming | Implemented | Older tool results are trimmed with an explicit length marker |
 | Tests | Implemented | `tests/context-engine.test.ts` covers the behaviors above and manifest fields |
 
-The `deepseek-harness` name still appears in archive paths, sidecar suffixes, logs, and the legacy config fallback. That is intentional compatibility, not the public plugin id.
+The `deepseek-harness` name remains only as a legacy config fallback and legacy sidecar read fallback. New local artifacts use the `reasonixlaw` project id.
 
 ## 1. Observability
 
@@ -80,7 +80,7 @@ The `deepseek-harness` name still appears in archive paths, sidecar suffixes, lo
 - Keep the current in-memory session map for fast same-process restores.
 - Add a small JSON state sidecar derived from the OpenClaw session file path.
 - Persist prefix, tail, compressed summary, ingested count, last model, compaction counters, and stats.
-- Load sidecar state during bootstrap before treating the session as new.
+- Load the new ReasoniXlaw sidecar during bootstrap before treating the session as new, with a fallback read from the old `deepseek-harness` sidecar suffix.
 
 ## 7. Safer Tool Output Handling
 

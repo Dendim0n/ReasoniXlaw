@@ -185,7 +185,7 @@ Large old tool results are trimmed outside the recent kept tail. The trim marker
 
 #### `archiveDropped` (default: true)
 
-Whether messages dropped during compaction are archived to `~/.openclaw/deepseek-harness/archive/` (JSONL format). The path keeps the old internal name for compatibility. Useful for post-hoc auditing; disable to save disk I/O and reduce local retention of tool outputs.
+Whether messages dropped during compaction are archived to `~/.openclaw/reasonixlaw/archive/` (JSONL format). Useful for post-hoc auditing; disable to save disk I/O and reduce local retention of tool outputs.
 
 #### `targetModels`
 
@@ -229,7 +229,7 @@ What improves:
 - Lower input cost when DeepSeek prefix cache hits the locked prefix.
 - Higher cache hit probability because the prefix is not rewritten during compaction.
 - Less context churn because recent tail selection is token-aware and old tool output can be trimmed before full compaction.
-- Better restart behavior when OpenClaw provides a stable `sessionFile`, because layer state is also persisted to `<sessionFile>.deepseek-harness-state.json`.
+- Better restart behavior when OpenClaw provides a stable `sessionFile`, because layer state is also persisted to `<sessionFile>.reasonixlaw-state.json`. Existing `<sessionFile>.deepseek-harness-state.json` files are still read as a legacy fallback.
 - No duplicated transport code. PI still owns auth, tools, streaming, retries, transcript persistence, and cache telemetry.
 
 What it costs:

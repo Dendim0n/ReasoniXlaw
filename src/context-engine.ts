@@ -37,9 +37,12 @@ import {
 } from "./types.js";
 
 import { createSubsystemLogger } from "openclaw/plugin-sdk/logging-core";
-const log = createSubsystemLogger("deepseek-harness");
+const ARTIFACT_ID = "reasonixlaw";
+const LEGACY_ARTIFACT_ID = "deepseek-harness";
+const log = createSubsystemLogger(ARTIFACT_ID);
 
-const STATE_SIDECAR_SUFFIX = ".deepseek-harness-state.json";
+const STATE_SIDECAR_SUFFIX = `.${ARTIFACT_ID}-state.json`;
+const LEGACY_STATE_SIDECAR_SUFFIX = `.${LEGACY_ARTIFACT_ID}-state.json`;
 const STATE_SIDECAR_VERSION = 1;
 const SUMMARY_TAG_OPEN = "<compaction-summary>";
 const SUMMARY_TAG_CLOSE = "</compaction-summary>";
@@ -209,7 +212,7 @@ export class DeepSeekContextEngine implements ContextEngine {
 
   constructor(config: DeepSeekHarnessConfig = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
-    log.info(`[deepseek-harness] context engine created`);
+    log.info(`[${ARTIFACT_ID}] context engine created`);
   }
 
   // ── State persistence helpers ───────────────────────────────────────────────
@@ -228,7 +231,7 @@ export class DeepSeekContextEngine implements ContextEngine {
       lastCompactionTokensBefore: this.lastCompactionTokensBefore,
       lastCompactionTokensAfter: this.lastCompactionTokensAfter,
     });
-    log.info(`[deepseek-harness] saveState: sessionId=${this.sessionId}, prefix=${this.prefix.length}, tail=${this.tail.length}`);
+    log.info(`[${ARTIFACT_ID}] saveState: sessionId=${this.sessionId}, prefix=${this.prefix.length}, tail=${this.tail.length}`);
   }
 
   private applyState(saved: SessionLayers): void {
@@ -248,15 +251,15 @@ export class DeepSeekContextEngine implements ContextEngine {
     const saved = sessionStateMap.get(sessionId);
     if (saved) {
       this.applyState(saved);
-      log.info(`[deepseek-harness] restoreState: sessionId=${sessionId}, prefix=${this.prefix.length}, tail=${this.tail.length}`);
+      log.info(`[${ARTIFACT_ID}] restoreState: sessionId=${sessionId}, prefix=${this.prefix.length}, tail=${this.tail.length}`);
       return true;
     }
-    log.info(`[deepseek-harness] restoreState: no saved state for ${sessionId}`);
+    log.info(`[${ARTIFACT_ID}] restoreState: no saved state for ${sessionId}`);
     return false;
   }
 
-  private stateSidecarPath(): string | null {
-    return this.sessionFile ? `${this.sessionFile}${STATE_SIDECAR_SUFFIX}` : null;
+  private stateSidecarPath(suffix = STATE_SIDECAR_SUFFIX): string | null {
+    return this.sessionFile ? `${this.sessionFile}${suffix}` : null;
   }
 
   private async persistStateSidecar(): Promise<void> {
@@ -273,28 +276,37 @@ export class DeepSeekContextEngine implements ContextEngine {
       };
       await fs.promises.writeFile(filePath, JSON.stringify(payload), "utf-8");
     } catch (err) {
-      log.warn(`[deepseek-harness] state sidecar persist failed: ${String(err)}`);
+      log.warn(`[${ARTIFACT_ID}] state sidecar persist failed: ${String(err)}`);
     }
   }
 
   private async restoreStateSidecar(sessionId: string): Promise<boolean> {
-    const filePath = this.stateSidecarPath();
-    if (!filePath) return false;
+    const filePaths = [
+      this.stateSidecarPath(),
+      this.stateSidecarPath(LEGACY_STATE_SIDECAR_SUFFIX),
+    ].filter((path): path is string => Boolean(path));
     try {
       const fs = await import("node:fs");
-      const raw = await fs.promises.readFile(filePath, "utf-8");
-      const parsed = JSON.parse(raw) as {
-        version?: number;
-        sessionId?: string;
-        state?: SessionLayers;
-      };
-      if (parsed.version !== STATE_SIDECAR_VERSION || parsed.sessionId !== sessionId || !parsed.state) {
-        return false;
+      for (const filePath of filePaths) {
+        try {
+          const raw = await fs.promises.readFile(filePath, "utf-8");
+          const parsed = JSON.parse(raw) as {
+            version?: number;
+            sessionId?: string;
+            state?: SessionLayers;
+          };
+          if (parsed.version !== STATE_SIDECAR_VERSION || parsed.sessionId !== sessionId || !parsed.state) {
+            continue;
+          }
+          this.applyState(parsed.state);
+          sessionStateMap.set(sessionId, parsed.state);
+          log.info(`[${ARTIFACT_ID}] restoreStateSidecar: sessionId=${sessionId}, file=${filePath}, prefix=${this.prefix.length}, tail=${this.tail.length}`);
+          return true;
+        } catch {
+          continue;
+        }
       }
-      this.applyState(parsed.state);
-      sessionStateMap.set(sessionId, parsed.state);
-      log.info(`[deepseek-harness] restoreStateSidecar: sessionId=${sessionId}, prefix=${this.prefix.length}, tail=${this.tail.length}`);
-      return true;
+      return false;
     } catch {
       return false;
     }
@@ -307,7 +319,7 @@ export class DeepSeekContextEngine implements ContextEngine {
     sessionKey?: string;
     sessionFile: string;
   }): Promise<BootstrapResult> {
-    this.archiveDir = `${process.env.HOME || "/tmp"}/.openclaw/deepseek-harness/archive`;
+    this.archiveDir = `${process.env.HOME || "/tmp"}/.openclaw/${ARTIFACT_ID}/archive`;
     this.sessionFile = params.sessionFile;
 
     // Clean up previous session's state from module-level map
@@ -331,7 +343,7 @@ export class DeepSeekContextEngine implements ContextEngine {
       this.lastCompactionTokensAfter = null;
     }
 
-    log.info(`[deepseek-harness] bootstrap: sessionId=${params.sessionId}, prefix=${this.prefix.length}, tail=${this.tail.length}`);
+    log.info(`[${ARTIFACT_ID}] bootstrap: sessionId=${params.sessionId}, prefix=${this.prefix.length}, tail=${this.tail.length}`);
     return { bootstrapped: true };
   }
 
@@ -370,11 +382,11 @@ export class DeepSeekContextEngine implements ContextEngine {
     // Non-target model: pass through unchanged
     if (!isDeepSeekModel(model, this.config.targetModels)) {
       this.lastModel = model;
-      log.info(`[deepseek-harness] assemble: model=${model}, passthrough (non-DeepSeek)`);
+      log.info(`[${ARTIFACT_ID}] assemble: model=${model}, passthrough (non-target)`);
       return { messages, estimatedTokens: estimateTotalTokens(messages) };
     }
     this.lastModel = model;
-    log.info(`[deepseek-harness] assemble: model=${model}, prefix-stable active (messages=${messages.length}, prefix=${this.prefix.length}, tail=${this.tail.length})`);
+    log.info(`[${ARTIFACT_ID}] assemble: model=${model}, prefix-stable active (messages=${messages.length}, prefix=${this.prefix.length}, tail=${this.tail.length})`);
 
     // First call: split into prefix + tail
     if (this.prefix.length === 0 && messages.length > 0) {
@@ -556,7 +568,7 @@ export class DeepSeekContextEngine implements ContextEngine {
   }): Promise<CompactResult> {
     // Non-target model: skip prefix-stable compaction
     if (!isDeepSeekModel(this.lastModel, this.config.targetModels)) {
-      log.info(`[deepseek-harness] compact: model=${this.lastModel}, skipped (non-DeepSeek)`);
+      log.info(`[${ARTIFACT_ID}] compact: model=${this.lastModel}, skipped (non-target)`);
       return { ok: true, compacted: false, reason: "non-DeepSeek model, using default compaction" };
     }
 
@@ -569,11 +581,11 @@ export class DeepSeekContextEngine implements ContextEngine {
     }
 
     if (this.tail.length <= this.config.recentKeepCount) {
-      log.info(`[deepseek-harness] compact: tail=${this.tail.length}, skipped (too short)`);
+      log.info(`[${ARTIFACT_ID}] compact: tail=${this.tail.length}, skipped (too short)`);
       return { ok: true, compacted: false, reason: "tail too short" };
     }
 
-    log.info(`[deepseek-harness] compact: prefix-stable compaction triggered (tail=${this.tail.length})`);
+    log.info(`[${ARTIFACT_ID}] compact: prefix-stable compaction triggered (tail=${this.tail.length})`);
 
     // Split tail into [toCompact] | [toKeep]
     const boundary = this.findTokenAwareTailBoundary();
@@ -650,7 +662,7 @@ export class DeepSeekContextEngine implements ContextEngine {
     // Save state to module-level map so next turn's engine can restore it
     this.saveState();
     await this.persistStateSidecar();
-    log.info(`[deepseek-harness] dispose: state saved, prefix=${this.prefix.length}, tail=${this.tail.length}`);
+    log.info(`[${ARTIFACT_ID}] dispose: state saved, prefix=${this.prefix.length}, tail=${this.tail.length}`);
     // DO NOT clear layers — the module-level map holds them across PI's dispose/recreate cycle
   }
 
@@ -667,7 +679,7 @@ export class DeepSeekContextEngine implements ContextEngine {
       const lines = messages.map((m) => JSON.stringify(m)).join("\n");
       await fs.promises.writeFile(filePath, lines, "utf-8");
     } catch (err) {
-      console.error(`[deepseek-harness] Archive failed:`, err);
+      console.error(`[${ARTIFACT_ID}] Archive failed:`, err);
     }
   }
 

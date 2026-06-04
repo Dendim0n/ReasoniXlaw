@@ -16,5 +16,5 @@
 ## Notes
 
 - Manifest schema now lists every documented tuning key because `additionalProperties: false` rejects unknown config.
-- `deepseek-harness` remains only as a legacy config fallback and as the current archive/sidecar internal path prefix.
+- `deepseek-harness` remains only as a legacy config fallback and legacy sidecar read fallback. New archive and sidecar writes use `reasonixlaw`.
 - Verification run: `npm test`, `npm run lint`, `npm run build`, `git diff --check`, `graphify update .`, and sec-code submits for touched code/config files.

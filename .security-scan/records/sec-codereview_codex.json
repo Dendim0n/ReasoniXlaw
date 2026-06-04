@@ -85,6 +85,24 @@
       "human": false,
       "ts": 1780568280,
       "reported": 1
+    },
+    {
+      "filepath": "src/context-engine.ts",
+      "hash": "00f8e9f7d9d6907bba7a8b6f4f54948c35dfae86ee65ffce9a665ac1857939f4",
+      "risks": [],
+      "summary": "",
+      "human": false,
+      "ts": 1780570498,
+      "reported": 1
+    },
+    {
+      "filepath": "tests/context-engine.test.ts",
+      "hash": "687e2167bb69d49e86b07b5bc05188920ba3a461a23106a8dbfa98c8600fcc2c",
+      "risks": [],
+      "summary": "",
+      "human": false,
+      "ts": 1780570498,
+      "reported": 1
     }
   ]
 }

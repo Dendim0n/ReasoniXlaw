@@ -4,7 +4,7 @@
  * These tests verify the prefix-stable context management logic.
  */
 
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, test, expect, beforeEach } from "vitest";
@@ -97,8 +97,10 @@ describe("DeepSeekContextEngine", () => {
   beforeEach(async () => {
     _clearSessionState();
     await rm(`${SESSION_FILE}.deepseek-harness-state.json`, { force: true });
+    await rm(`${SESSION_FILE}.reasonixlaw-state.json`, { force: true });
     for (const id of ["t1", "t2", "t3", "t4", "t5", "t6", "t7"]) {
       await rm(`/tmp/${id}.deepseek-harness-state.json`, { force: true });
+      await rm(`/tmp/${id}.reasonixlaw-state.json`, { force: true });
     }
   });
 
@@ -369,7 +371,7 @@ describe("DeepSeekContextEngine", () => {
     expect(summaryContent).not.toContain("---");
   });
 
-  test("dispose persists layer state to a session sidecar", async () => {
+  test("dispose persists layer state to a reasonixlaw session sidecar", async () => {
     const sessionFile = await makeSessionFile("sidecar");
     try {
       const engine = new DeepSeekContextEngine({ prefixLockCount: 2 });
@@ -383,6 +385,9 @@ describe("DeepSeekContextEngine", () => {
       const statsBefore = engine.getCacheStats();
       await engine.dispose();
 
+      await expect(access(`${sessionFile}.reasonixlaw-state.json`)).resolves.toBeUndefined();
+      await expect(access(`${sessionFile}.deepseek-harness-state.json`)).rejects.toThrow();
+
       _clearSessionState("sidecar-session");
 
       const engine2 = new DeepSeekContextEngine({ prefixLockCount: 2 });
@@ -390,6 +395,41 @@ describe("DeepSeekContextEngine", () => {
       const statsAfter = engine2.getCacheStats();
       expect(statsAfter.prefixTokens).toBe(statsBefore.prefixTokens);
       expect(statsAfter.tailTokens).toBe(statsBefore.tailTokens);
+    } finally {
+      await cleanupSessionFile(sessionFile);
+    }
+  });
+
+  test("bootstrap restores legacy deepseek-harness sidecar state", async () => {
+    const sessionFile = await makeSessionFile("legacy-sidecar");
+    try {
+      const sessionId = "legacy-sidecar-session";
+      const legacyState = {
+        version: 1,
+        sessionId,
+        state: {
+          prefix: [userMsg("legacy prefix"), assistantMsg("legacy answer")],
+          tail: [userMsg("legacy tail")],
+          compressedSummary: null,
+          ingestedCount: 3,
+          lastModel: "deepseek-v4-flash",
+          compactionCount: 1,
+          consecutiveOverThresholdCompactions: 0,
+          compactStuck: false,
+          lastCompactionTokensBefore: 100,
+          lastCompactionTokensAfter: 50,
+        },
+      };
+      await writeFile(`${sessionFile}.deepseek-harness-state.json`, JSON.stringify(legacyState), "utf-8");
+      _clearSessionState(sessionId);
+
+      const engine = new DeepSeekContextEngine({ prefixLockCount: 2 });
+      await engine.bootstrap({ sessionId, sessionFile });
+
+      const stats = engine.getCacheStats();
+      expect(stats.prefixMessages).toBe(2);
+      expect(stats.tailMessages).toBe(1);
+      expect(stats.compactionCount).toBe(1);
     } finally {
       await cleanupSessionFile(sessionFile);
     }

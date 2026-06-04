@@ -182,7 +182,7 @@ tail 层至少保留的最近消息数。这些消息在压缩时不被摘要，
 
 #### `archiveDropped`（默认：true）
 
-压缩时被丢弃的消息是否归档到 `~/.openclaw/deepseek-harness/archive/` 目录（JSONL 格式）。该路径保留旧内部名称用于兼容。开起来方便事后审计或回溯，关了可以省磁盘 I/O，并减少本地保留的工具输出。
+压缩时被丢弃的消息是否归档到 `~/.openclaw/reasonixlaw/archive/` 目录（JSONL 格式）。开起来方便事后审计或回溯，关了可以省磁盘 I/O，并减少本地保留的工具输出。
 
 #### `targetModels`
 
@@ -226,7 +226,7 @@ PI 的 model transport（`params.model`）已经：
 - DeepSeek prefix cache 命中时，输入成本更低。
 - prefix 在压缩时不被改写，缓存命中概率更高。
 - 最近 tail 按 token 预算选择，旧工具输出可先裁剪，减少上下文抖动。
-- 当 OpenClaw 提供稳定 `sessionFile` 时，层状态会写入 `<sessionFile>.deepseek-harness-state.json`，进程重启后更容易恢复 prefix-stable 状态。
+- 当 OpenClaw 提供稳定 `sessionFile` 时，层状态会写入 `<sessionFile>.reasonixlaw-state.json`。已有的 `<sessionFile>.deepseek-harness-state.json` 仍会作为旧格式 fallback 读取。
 - 不重复造 transport。认证、工具、流式、重试、对话持久化和缓存统计仍由 PI 负责。
 
 代价：
