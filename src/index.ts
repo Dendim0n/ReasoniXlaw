@@ -1,14 +1,14 @@
 /**
  * ReasoniXlaw — Plugin entry point
  *
- * Registers a ContextEngine: "deepseek-prefix-stable"
+ * Registers a ContextEngine: "reasonixlaw-prefix-stable"
  *
  * Configuration in openclaw.json:
  * ```json5
  * {
  *   plugins: {
  *     entries: {
- *       "deepseek-harness": {
+ *       "reasonixlaw": {
  *         enabled: true,
  *         config: {
  *           targetModels: ["deepseek-v4-flash", "deepseek-v4-pro", "mimo-v2.5-pro", "mimo-v2.5"]
@@ -16,7 +16,7 @@
  *       }
  *     },
  *     slots: {
- *       contextEngine: "deepseek-prefix-stable"
+ *       contextEngine: "reasonixlaw-prefix-stable"
  *     }
  *   }
  * }
@@ -33,20 +33,21 @@ export { DeepSeekContextEngine } from "./context-engine.js";
 export type { DeepSeekHarnessConfig } from "./types.js";
 export { estimateTextTokens, estimateMessageTokens, estimateTotalTokens, extractContent, extractToolCallNames } from "./types.js";
 
-const CONTEXT_ENGINE_ID = "deepseek-prefix-stable";
-const HARNESS_ID = "deepseek-harness";
+const CONTEXT_ENGINE_ID = "reasonixlaw-prefix-stable";
+const HARNESS_ID = "reasonixlaw";
+const LEGACY_HARNESS_ID = "deepseek-harness";
 
-/** Read plugin config from openclaw.json → plugins.entries.deepseek-harness.config */
+/** Read plugin config from openclaw.json → plugins.entries.reasonixlaw.config. */
 function readPluginConfig(config?: OpenClawConfig): DeepSeekHarnessConfig {
   const entries = (config as unknown as Record<string, unknown>)?.plugins as Record<string, unknown> | undefined;
   const entriesMap = entries?.entries as Record<string, Record<string, unknown>> | undefined;
-  const entry = entriesMap?.[HARNESS_ID];
+  const entry = entriesMap?.[HARNESS_ID] ?? entriesMap?.[LEGACY_HARNESS_ID];
   return (entry?.config as DeepSeekHarnessConfig) ?? {};
 }
 
 export default definePluginEntry({
   id: HARNESS_ID,
-  name: "DeepSeek Harness",
+  name: "ReasoniXlaw",
   description:
     "Prefix-cache stable context engine for DeepSeek models. " +
     "Three-layer context management keeps the prompt prefix locked so " +

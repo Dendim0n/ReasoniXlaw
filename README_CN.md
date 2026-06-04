@@ -4,11 +4,13 @@
   <img src="./docs/reasonixlaw-logo.png" alt="ReasoniXlaw Logo" width="600">
 </p>
 
-**DeepSeek 模型的 prefix-cache 稳定上下文引擎 — OpenClaw 插件。**
+**DeepSeek 兼容模型的 prefix-cache 稳定上下文引擎 — OpenClaw 插件。**
 
 > 灵感来自 [Reasonix](https://github.com/esengine/DeepSeek-Reasonix) — 感谢该项目作者提出的 prefix-stable 上下文管理理念。
 
 [English](./README.md) | 中文
+
+文档：[架构](./docs/ARCHITECTURE.md) | [优化说明](./docs/OPTIMIZATION_PLAN.md)
 
 ## 问题
 
@@ -80,45 +82,47 @@ npm run build
 {
   plugins: {
     entries: {
-      "deepseek-harness": { enabled: true }
+      "reasonixlaw": { enabled: true }
     },
     slots: {
-      contextEngine: "deepseek-prefix-stable"
+      contextEngine: "reasonixlaw-prefix-stable"
     }
   }
 }
 ```
 
-就这么简单。当使用 DeepSeek 模型时，PI 会自动使用我们的 prefix-stable 上下文引擎。
+就这么简单。当使用匹配的 DeepSeek 兼容目标模型时，PI 会自动使用我们的 prefix-stable 上下文引擎。
+
+插件入口 id 使用 `reasonixlaw`，runtime context engine id 使用 `reasonixlaw-prefix-stable`。代码仍会在新入口没有配置时读取旧的 `plugins.entries.deepseek-harness.config`，方便已有调参配置逐步迁移。旧 slot id `deepseek-prefix-stable` 不是当前 runtime id。
 
 ### 自定义目标模型
 
-默认 `deepseek-v4-flash`、`deepseek-v4-pro`、`mimo-v2.5-pro` 和 `mimo-v2.5` 会触发 prefix-stable 模式。如需添加自己的模型：
+默认任何包含 `deepseek` 的模型名都会触发 prefix-stable 模式。额外默认目标列表还覆盖 `mimo-v2.5-pro` 和 `mimo-v2.5`。如需添加自己的非 DeepSeek 模型别名：
 
 ```json5
 // ~/.openclaw/openclaw.json
 {
   plugins: {
     entries: {
-      "deepseek-harness": {
+      "reasonixlaw": {
         enabled: true,
         config: {
-          targetModels: ["deepseek-v4-flash", "deepseek-v4-pro", "mimo-v2.5-pro", "mimo-v2.5", "deepseek-v3", "my-custom-deepseek"]
+          targetModels: ["mimo-v2.5-pro", "mimo-v2.5", "my-private-r1"]
         }
       }
     },
     slots: {
-      contextEngine: "deepseek-prefix-stable"
+      contextEngine: "reasonixlaw-prefix-stable"
     }
   }
 }
 ```
 
-`targetModels` 会**替换**默认列表 — 需要保留默认值的话请一并写上。
+`targetModels` 会替换额外目标列表，但不会替换内置的 `deepseek` 字符串规则。如果自定义后仍希望 `mimo-v2.5-pro` 和 `mimo-v2.5` 激活，需要把它们继续写进列表。
 
 ### 模型检测
 
-引擎**仅对** DeepSeek 模型激活。检测逻辑：
+引擎会对 DeepSeek 兼容目标模型激活。检测逻辑有两条：任何包含 `deepseek` 的模型名都会激活；任何匹配 `targetModels` 的模型名也会激活。
 
 | 模型 | Prefix-stable 模式 |
 |------|-------------------|
@@ -132,15 +136,19 @@ npm run build
 | `gpt-4o` | ❌ 透传（PI 默认行为） |
 | unknown/undefined | ✅ 激活（安全默认值） |
 
-非 DeepSeek 模型走 PI 默认上下文管理 — 零开销、零干扰。
+非目标模型走 PI 默认上下文管理 — 零开销、零干扰。
 
 ### 可选调参
 
 | 选项 | 默认值 | 说明 |
 |------|--------|------|
 | `prefixLockCount` | 2 | 锁定到 prefix 层的消息数 |
-| `recentKeepCount` | 8 | 在 tail 中保留的最近消息数 |
+| `recentKeepCount` | 8 | 在 tail 中至少保留的最近消息数 |
+| `tailTokenBudget` | 16384 | 用于保留更多最近 tail 消息的 token 预算 |
 | `compactRatio` | 0.8 | 触发压缩的上下文比例 |
+| `outputReservedTokens` | 32768 | 计算压缩压力前预留的输出 token 预算 |
+| `maxSummaryTokens` | 2000 | 累计摘要超过该估算值后重新压缩 |
+| `toolResultTrimChars` | 2000 | 旧工具结果被裁剪前保留的字符数 |
 | `archiveDropped` | true | 是否将被丢弃的消息归档到磁盘 |
 | `targetModels` | `["deepseek-v4-flash", "deepseek-v4-pro", "mimo-v2.5-pro", "mimo-v2.5"]` | 触发 prefix-stable 模式的模型名模式 |
 
@@ -150,19 +158,35 @@ npm run build
 
 #### `recentKeepCount`（默认：8）
 
-tail 层保留的最近消息数。这些消息在压缩时不被摘要，保持原文。8 条意味着你最近 4 轮对话不会丢细节。设太大 → 上下文膨胀快；设太小 → 近期记忆模糊。
+tail 层至少保留的最近消息数。这些消息在压缩时不被摘要，保持原文。只要还在 `tailTokenBudget` 内，引擎会继续多保留一些较新的消息。
+
+#### `tailTokenBudget`（默认：16384）
+
+用于 verbatim tail 的 token 预算，作用在最低保留消息数之外。这样少数大型工具输出不会频繁触发完整压缩，小型最近消息也能尽量保留原文。
 
 #### `compactRatio`（默认：0.8）
 
 当已用 token 达到 context window 的 80% 时触发压缩。0.8 是个平衡点——太早压缩（0.5）浪费空间，太晚（0.95）可能来不及压缩就被 PI 强制截断了。
 
+#### `outputReservedTokens`（默认：32768）
+
+计算压缩压力前预留给模型输出的预算。有效触发阈值近似为 `tokenBudget * compactRatio - outputReservedTokens`，预期输出越大，压缩越早发生。
+
+#### `maxSummaryTokens`（默认：2000）
+
+累计摘要允许的最大估算 token 数。超过后，引擎会把旧摘要和新摘要重新压缩成一个有边界的结构化 briefing，而不是无限追加。
+
+#### `toolResultTrimChars`（默认：2000）
+
+旧工具结果在最近保留窗口之外会被裁剪。裁剪标记会记录原始长度和保留字符数，让模型知道证据被缩短过。
+
 #### `archiveDropped`（默认：true）
 
-压缩时被丢弃的消息是否归档到 `~/.openclaw/deepseek-harness/archive/` 目录（JSONL 格式）。开起来方便事后审计或回溯，关了省磁盘 I/O。
+压缩时被丢弃的消息是否归档到 `~/.openclaw/deepseek-harness/archive/` 目录（JSONL 格式）。该路径保留旧内部名称用于兼容。开起来方便事后审计或回溯，关了可以省磁盘 I/O，并减少本地保留的工具输出。
 
 #### `targetModels`
 
-哪些模型名触发 prefix-stable 模式。**替换**（不是追加）默认列表，所以你自定义时要把默认的也写上，否则 `deepseek-v4-flash`、`mimo-v2.5-pro` 之类的默认模型就不激活了。
+额外的模型名模式。任何包含 `deepseek` 的模型名仍会激活，即使不在这里。自定义这个列表主要影响 `mimo-v2.5-pro`、`mimo-v2.5`，以及不包含 `deepseek` 字符串的私有 DeepSeek 兼容模型名。
 
 > **一般来说默认值就够用。** 除非：context 特别紧张（降 `prefixLockCount`），近期对话需要更精确（提 `recentKeepCount`），上下文经常爆（降 `compactRatio`）。
 
@@ -170,8 +194,9 @@ tail 层保留的最近消息数。这些消息在压缩时不被摘要，保持
 
 1. **首次 `assemble()` 调用**：系统 prompt + 前 N 条消息 → 锁入 Layer 1（prefix）
 2. **后续调用**：新消息 → 只追加到 Layer 2（tail）
-3. **压缩**：上下文填满时 → 只有 Layer 3 改变 → prefix 保持稳定
+3. **压缩**：上下文填满时 → token-aware tail 选择 + 结构化中间摘要 → prefix 保持稳定
 4. **DeepSeek 看到相同的开头** → 缓存 token 按 10% 计费
+5. **循环保护**：如果连续压缩仍无法降到阈值以下，自动压缩会暂停，避免浪费轮次
 
 ## 关键设计决策
 
@@ -194,6 +219,26 @@ PI 的 model transport（`params.model`）已经：
 
 自建 HTTP client 会重复所有这些功能，还失去了 auth 集成。
 
+## 收益与代价
+
+收益：
+
+- DeepSeek prefix cache 命中时，输入成本更低。
+- prefix 在压缩时不被改写，缓存命中概率更高。
+- 最近 tail 按 token 预算选择，旧工具输出可先裁剪，减少上下文抖动。
+- 当 OpenClaw 提供稳定 `sessionFile` 时，层状态会写入 `<sessionFile>.deepseek-harness-state.json`，进程重启后更容易恢复 prefix-stable 状态。
+- 不重复造 transport。认证、工具、流式、重试、对话持久化和缓存统计仍由 PI 负责。
+
+代价：
+
+- 锁定 prefix 不容易改变。如果最早几条消息质量差，它们会一直留在可缓存 prefix 中，直到重开会话。
+- 摘要是有损的。结构化 prompt 会尽量保留操作状态，但细节仍可能丢失。
+- 有 runtime LLM 可用时，压缩会增加一次小模型调用和延迟。抽取式 fallback 更便宜，但精度更低。
+- token 估算是 CJK-aware 字符估算，不是 provider tokenizer 的精确值。
+- 旧工具结果裁剪可能隐藏证据。裁剪标记会说明发生过裁剪，archive 可以在本地保留原始消息。
+- sidecar 和 archive 会在本地保留上下文投影数据和被压缩消息。不希望本地保留时请关闭 `archiveDropped`。
+- 如果连续两次压缩仍超过阈值，stuck guard 会暂停自动压缩。这能避免重复浪费，但剩余压力仍可能需要 host 处理。
+
 ## 费用对比
 
 | 场景 | 默认 PI | 本引擎 |
@@ -202,7 +247,7 @@ PI 的 model transport（`params.model`）已经：
 | 每轮费用（V4 Pro，1M ctx） | ~$0.15 | ~$0.03 |
 | 长会话（50 轮） | ~$7.50 | ~$1.50 |
 
-*基于 DeepSeek 定价：$0.14/M 输入，$0.028/M 缓存。*
+*仅作估算示例。用于预算前请替换成当前 provider 价格。*
 
 ## 测试
 
@@ -219,6 +264,8 @@ npm test
 | `src/index.ts` | 插件入口 — 注册 context engine |
 | `tests/context-engine.test.ts` | 单元测试 |
 | `openclaw.plugin.json` | 插件清单 |
+| `docs/ARCHITECTURE.md` | 集成流程、状态持久化与设计取舍 |
+| `docs/OPTIMIZATION_PLAN.md` | 已实施优化措施与原理 |
 
 ## 许可证
 

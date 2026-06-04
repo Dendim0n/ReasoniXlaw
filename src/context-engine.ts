@@ -27,10 +27,43 @@ import type {
 import type { AgentMessage } from "openclaw/plugin-sdk/agent-harness-runtime";
 
 import type { DeepSeekHarnessConfig, ResolvedConfig } from "./types.js";
-import { DEFAULT_CONFIG, estimateTotalTokens, estimateTextTokens, extractContent, extractToolCallNames } from "./types.js";
+import {
+  DEFAULT_CONFIG,
+  estimateMessageTokens,
+  estimateTotalTokens,
+  estimateTextTokens,
+  extractContent,
+  extractToolCallNames,
+} from "./types.js";
 
 import { createSubsystemLogger } from "openclaw/plugin-sdk/logging-core";
 const log = createSubsystemLogger("deepseek-harness");
+
+const STATE_SIDECAR_SUFFIX = ".deepseek-harness-state.json";
+const STATE_SIDECAR_VERSION = 1;
+const SUMMARY_TAG_OPEN = "<compaction-summary>";
+const SUMMARY_TAG_CLOSE = "</compaction-summary>";
+const SUMMARY_HEADING_PROMPT = `Write a terse briefing under these exact headings, omitting a heading only if it has no content:
+
+## Goal
+The user's request and intent, including explicit requirements and constraints.
+
+## Decisions & rationale
+Key choices made so far and why.
+
+## Files & code
+Files read or modified, with concrete identifiers, paths, signatures, data shapes, and exact edits that matter.
+
+## Commands & outcomes
+Commands run and the relevant pass/fail results or error text.
+
+## Errors & fixes
+Problems encountered and how they were resolved or why they remain unresolved.
+
+## Pending & next step
+Unfinished work and the single most concrete next action.
+
+Rules: preserve identifiers, paths, and numbers exactly. Do not invent facts. Use bullets and fragments, not prose.`;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -119,6 +152,11 @@ interface SessionLayers {
   compressedSummary: string | null;
   ingestedCount: number;
   lastModel: string | undefined;
+  compactionCount: number;
+  consecutiveOverThresholdCompactions: number;
+  compactStuck: boolean;
+  lastCompactionTokensBefore: number | null;
+  lastCompactionTokensAfter: number | null;
 }
 
 const sessionStateMap = new Map<string, SessionLayers>();
@@ -136,7 +174,7 @@ export function _clearSessionState(sessionId?: string): void {
 
 export class DeepSeekContextEngine implements ContextEngine {
   readonly info: ContextEngineInfo = {
-    id: "deepseek-prefix-stable",
+    id: "reasonixlaw-prefix-stable",
     name: "DeepSeek Prefix-Stable Context Engine",
     version: "0.1.0",
     ownsCompaction: true,
@@ -156,6 +194,16 @@ export class DeepSeekContextEngine implements ContextEngine {
   // Track last model to guard compact()
   private lastModel: string | undefined = undefined;
 
+  // Compaction observability and loop guard
+  private compactionCount = 0;
+  private consecutiveOverThresholdCompactions = 0;
+  private compactStuck = false;
+  private lastCompactionTokensBefore: number | null = null;
+  private lastCompactionTokensAfter: number | null = null;
+
+  // Session file path used for durable layer sidecar state
+  private sessionFile: string | null = null;
+
   // Archive directory
   private archiveDir: string | null = null;
 
@@ -174,23 +222,82 @@ export class DeepSeekContextEngine implements ContextEngine {
       compressedSummary: this.compressedSummary,
       ingestedCount: this.ingestedCount,
       lastModel: this.lastModel,
+      compactionCount: this.compactionCount,
+      consecutiveOverThresholdCompactions: this.consecutiveOverThresholdCompactions,
+      compactStuck: this.compactStuck,
+      lastCompactionTokensBefore: this.lastCompactionTokensBefore,
+      lastCompactionTokensAfter: this.lastCompactionTokensAfter,
     });
     log.info(`[deepseek-harness] saveState: sessionId=${this.sessionId}, prefix=${this.prefix.length}, tail=${this.tail.length}`);
+  }
+
+  private applyState(saved: SessionLayers): void {
+    this.prefix = saved.prefix;
+    this.tail = saved.tail;
+    this.compressedSummary = saved.compressedSummary;
+    this.ingestedCount = saved.ingestedCount;
+    this.lastModel = saved.lastModel;
+    this.compactionCount = saved.compactionCount ?? 0;
+    this.consecutiveOverThresholdCompactions = saved.consecutiveOverThresholdCompactions ?? 0;
+    this.compactStuck = saved.compactStuck ?? false;
+    this.lastCompactionTokensBefore = saved.lastCompactionTokensBefore ?? null;
+    this.lastCompactionTokensAfter = saved.lastCompactionTokensAfter ?? null;
   }
 
   private restoreState(sessionId: string): boolean {
     const saved = sessionStateMap.get(sessionId);
     if (saved) {
-      this.prefix = saved.prefix;
-      this.tail = saved.tail;
-      this.compressedSummary = saved.compressedSummary;
-      this.ingestedCount = saved.ingestedCount;
-      this.lastModel = saved.lastModel;
+      this.applyState(saved);
       log.info(`[deepseek-harness] restoreState: sessionId=${sessionId}, prefix=${this.prefix.length}, tail=${this.tail.length}`);
       return true;
     }
     log.info(`[deepseek-harness] restoreState: no saved state for ${sessionId}`);
     return false;
+  }
+
+  private stateSidecarPath(): string | null {
+    return this.sessionFile ? `${this.sessionFile}${STATE_SIDECAR_SUFFIX}` : null;
+  }
+
+  private async persistStateSidecar(): Promise<void> {
+    const filePath = this.stateSidecarPath();
+    if (!filePath || !this.sessionId) return;
+    try {
+      const fs = await import("node:fs");
+      const path = await import("node:path");
+      await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+      const payload = {
+        version: STATE_SIDECAR_VERSION,
+        sessionId: this.sessionId,
+        state: sessionStateMap.get(this.sessionId),
+      };
+      await fs.promises.writeFile(filePath, JSON.stringify(payload), "utf-8");
+    } catch (err) {
+      log.warn(`[deepseek-harness] state sidecar persist failed: ${String(err)}`);
+    }
+  }
+
+  private async restoreStateSidecar(sessionId: string): Promise<boolean> {
+    const filePath = this.stateSidecarPath();
+    if (!filePath) return false;
+    try {
+      const fs = await import("node:fs");
+      const raw = await fs.promises.readFile(filePath, "utf-8");
+      const parsed = JSON.parse(raw) as {
+        version?: number;
+        sessionId?: string;
+        state?: SessionLayers;
+      };
+      if (parsed.version !== STATE_SIDECAR_VERSION || parsed.sessionId !== sessionId || !parsed.state) {
+        return false;
+      }
+      this.applyState(parsed.state);
+      sessionStateMap.set(sessionId, parsed.state);
+      log.info(`[deepseek-harness] restoreStateSidecar: sessionId=${sessionId}, prefix=${this.prefix.length}, tail=${this.tail.length}`);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -201,6 +308,7 @@ export class DeepSeekContextEngine implements ContextEngine {
     sessionFile: string;
   }): Promise<BootstrapResult> {
     this.archiveDir = `${process.env.HOME || "/tmp"}/.openclaw/deepseek-harness/archive`;
+    this.sessionFile = params.sessionFile;
 
     // Clean up previous session's state from module-level map
     if (this.sessionId && this.sessionId !== params.sessionId) {
@@ -210,12 +318,17 @@ export class DeepSeekContextEngine implements ContextEngine {
     this.sessionId = params.sessionId;
 
     // Try to restore state from module-level map
-    if (!this.restoreState(params.sessionId)) {
+    if (!this.restoreState(params.sessionId) && !(await this.restoreStateSidecar(params.sessionId))) {
       // New session — clear layers
       this.prefix = [];
       this.tail = [];
       this.compressedSummary = null;
       this.ingestedCount = 0;
+      this.compactionCount = 0;
+      this.consecutiveOverThresholdCompactions = 0;
+      this.compactStuck = false;
+      this.lastCompactionTokensBefore = null;
+      this.lastCompactionTokensAfter = null;
     }
 
     log.info(`[deepseek-harness] bootstrap: sessionId=${params.sessionId}, prefix=${this.prefix.length}, tail=${this.tail.length}`);
@@ -254,7 +367,7 @@ export class DeepSeekContextEngine implements ContextEngine {
   }): Promise<AssembleResult> {
     const { messages, tokenBudget, model } = params;
 
-    // Non-DeepSeek model: pass through unchanged
+    // Non-target model: pass through unchanged
     if (!isDeepSeekModel(model, this.config.targetModels)) {
       this.lastModel = model;
       log.info(`[deepseek-harness] assemble: model=${model}, passthrough (non-DeepSeek)`);
@@ -286,13 +399,16 @@ export class DeepSeekContextEngine implements ContextEngine {
 
     // Pre-trim old tool results to delay full compaction
     const budget = tokenBudget || 1_000_000;
-    const threshold = budget * this.config.compactRatio - this.config.outputReservedTokens;
+    const threshold = this.compactionThreshold(budget);
     if (estimatedTokens > threshold) {
       this.trimOldToolResults();
+    } else if (tokenBudget !== undefined) {
+      this.resetCompactionGuard();
     }
 
     // Save state so next turn's engine instance can restore it
     this.saveState();
+    await this.persistStateSidecar();
 
     return {
       messages: this.compose(),
@@ -309,7 +425,7 @@ export class DeepSeekContextEngine implements ContextEngine {
       // in the middle of the agent-core message array)
       result.push({
         role: "user",
-        content: `[Context Summary]\nThe following is a summary of earlier conversation history:\n${this.compressedSummary}`,
+        content: `${SUMMARY_TAG_OPEN}\nSummary of earlier conversation history:\n${this.compressedSummary}\n${SUMMARY_TAG_CLOSE}`,
         timestamp: Date.now(),
       } as AgentMessage);
     }
@@ -323,12 +439,15 @@ export class DeepSeekContextEngine implements ContextEngine {
    */
   private trimOldToolResults(): void {
     const keepFrom = Math.max(0, this.tail.length - this.config.recentKeepCount);
-    for (let i = keepFrom; i < this.tail.length; i++) {
+    for (let i = 0; i < keepFrom; i++) {
       const msg = this.tail[i];
       if (msg.role === "toolResult") {
         const content = extractContent(msg);
-        if (content.length > 2000) {
-          const truncated = content.slice(0, 2000) + "\n...(truncated by context engine)";
+        if (content.length > this.config.toolResultTrimChars) {
+          const retained = content.slice(0, this.config.toolResultTrimChars);
+          const truncated =
+            `${retained}\n` +
+            `...[trimmed by context engine; originalLength=${content.length}; retainedChars=${this.config.toolResultTrimChars}]`;
           this.tail[i] = {
             ...msg,
             content: [{ type: "text" as const, text: truncated }],
@@ -336,6 +455,89 @@ export class DeepSeekContextEngine implements ContextEngine {
         }
       }
     }
+  }
+
+  private compactionThreshold(tokenBudget?: number): number {
+    const budget = tokenBudget || 1_000_000;
+    return Math.max(0, budget * this.config.compactRatio - this.config.outputReservedTokens);
+  }
+
+  private resetCompactionGuard(): void {
+    this.consecutiveOverThresholdCompactions = 0;
+    this.compactStuck = false;
+  }
+
+  private findTokenAwareTailBoundary(): number {
+    if (this.tail.length === 0) return 0;
+
+    const minKeep = Math.max(0, this.config.recentKeepCount);
+    const budget = Math.max(0, this.config.tailTokenBudget);
+    let start = this.tail.length;
+    let tokens = 0;
+
+    for (let i = this.tail.length - 1; i >= 0; i--) {
+      const messageTokens = estimateMessageTokens(this.tail[i]);
+      const keptCountAfterIncluding = this.tail.length - i;
+      if (keptCountAfterIncluding > minKeep && tokens + messageTokens > budget) {
+        break;
+      }
+      tokens += messageTokens;
+      start = i;
+    }
+
+    return findSafeBoundary(this.tail, start);
+  }
+
+  private async completeWithRuntime(
+    runtimeLlm: ContextEngineRuntimeContext["llm"] | undefined,
+    prompt: string,
+    fallback: string,
+  ): Promise<string> {
+    if (!runtimeLlm) return fallback;
+    try {
+      const result = await runtimeLlm.complete({
+        messages: [{ role: "user", content: prompt }],
+        maxTokens: 1000,
+        temperature: 0.3,
+      });
+      return result.text || fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
+  private async summarizeMessages(
+    messages: AgentMessage[],
+    runtimeLlm: ContextEngineRuntimeContext["llm"] | undefined,
+  ): Promise<string> {
+    const prompt =
+      `You are compacting the earlier part of a coding agent conversation to save context.\n` +
+      `The agent will keep only your summary plus the recent tail, so preserve operational state.\n\n` +
+      `${SUMMARY_HEADING_PROMPT}\n\n` +
+      `Conversation segment:\n${buildTranscript(messages)}\n\nSummary:`;
+    return this.completeWithRuntime(runtimeLlm, prompt, fallbackSummary(messages));
+  }
+
+  private async mergeSummary(
+    existingSummary: string | null,
+    newSummary: string,
+    runtimeLlm: ContextEngineRuntimeContext["llm"] | undefined,
+  ): Promise<string> {
+    if (!existingSummary) {
+      return newSummary;
+    }
+
+    const combined = `${existingSummary}\n\n${newSummary}`;
+    if (estimateTextTokens(combined) <= this.config.maxSummaryTokens) {
+      return combined;
+    }
+
+    const prompt =
+      `You are recompressing accumulated context summaries for a coding agent.\n` +
+      `Merge the prior summary and new summary into one bounded briefing.\n\n` +
+      `${SUMMARY_HEADING_PROMPT}\n\n` +
+      `Prior summary:\n${existingSummary}\n\nNew summary:\n${newSummary}\n\nMerged summary:`;
+    return this.completeWithRuntime(runtimeLlm, prompt, newSummary);
   }
 
   // ── Compact (the key innovation) ──────────────────────────────────────────
@@ -352,10 +554,18 @@ export class DeepSeekContextEngine implements ContextEngine {
     runtimeContext?: ContextEngineRuntimeContext;
     abortSignal?: AbortSignal;
   }): Promise<CompactResult> {
-    // Non-DeepSeek model: skip prefix-stable compaction
+    // Non-target model: skip prefix-stable compaction
     if (!isDeepSeekModel(this.lastModel, this.config.targetModels)) {
       log.info(`[deepseek-harness] compact: model=${this.lastModel}, skipped (non-DeepSeek)`);
       return { ok: true, compacted: false, reason: "non-DeepSeek model, using default compaction" };
+    }
+
+    if (this.compactStuck && !params.force) {
+      return {
+        ok: true,
+        compacted: false,
+        reason: "auto-compaction paused: previous compactions did not reduce context below threshold",
+      };
     }
 
     if (this.tail.length <= this.config.recentKeepCount) {
@@ -366,8 +576,7 @@ export class DeepSeekContextEngine implements ContextEngine {
     log.info(`[deepseek-harness] compact: prefix-stable compaction triggered (tail=${this.tail.length})`);
 
     // Split tail into [toCompact] | [toKeep]
-    const keepStart = this.tail.length - this.config.recentKeepCount;
-    const boundary = findSafeBoundary(this.tail, keepStart);
+    const boundary = this.findTokenAwareTailBoundary();
     const toCompact = this.tail.slice(0, boundary);
     const toKeep = this.tail.slice(boundary);
 
@@ -377,31 +586,8 @@ export class DeepSeekContextEngine implements ContextEngine {
 
     const tokensBefore = estimateTotalTokens(this.compose());
 
-    // Generate summary using the runtime's LLM capability
-    let summary: string;
     const runtimeLlm = params.runtimeContext?.llm;
-    if (runtimeLlm) {
-      try {
-        const result = await runtimeLlm.complete({
-          messages: [{
-            role: "user",
-            content:
-              `You are a conversation summarizer. Summarize concisely, preserving:\n` +
-              `1. Key decisions and conclusions\n2. Important facts discovered\n` +
-              `3. Tools used and outcomes\n4. Unresolved questions\n\n` +
-              `Keep under 500 words.\n\n` +
-              `Conversation segment:\n${buildTranscript(toCompact)}\n\nSummary:`,
-          }],
-          maxTokens: 1000,
-          temperature: 0.3,
-        });
-        summary = result.text || fallbackSummary(toCompact);
-      } catch {
-        summary = fallbackSummary(toCompact);
-      }
-    } else {
-      summary = fallbackSummary(toCompact);
-    }
+    const summary = await this.summarizeMessages(toCompact, runtimeLlm);
 
     // Archive dropped messages
     if (this.config.archiveDropped) {
@@ -410,14 +596,25 @@ export class DeepSeekContextEngine implements ContextEngine {
 
     // APPLY COMPACTION: PREFIX NEVER CHANGES
     this.tail = toKeep;
-    this.compressedSummary = this.compressedSummary
-      ? `${this.compressedSummary}\n\n---\n\n${summary}`
-      : summary;
+    this.compressedSummary = await this.mergeSummary(this.compressedSummary, summary, runtimeLlm);
 
     const tokensAfter = estimateTotalTokens(this.compose());
+    const threshold = this.compactionThreshold(params.tokenBudget);
+    this.compactionCount++;
+    this.lastCompactionTokensBefore = tokensBefore;
+    this.lastCompactionTokensAfter = tokensAfter;
+    if (!params.force && tokensAfter > threshold) {
+      this.consecutiveOverThresholdCompactions++;
+      if (this.consecutiveOverThresholdCompactions >= 2) {
+        this.compactStuck = true;
+      }
+    } else {
+      this.resetCompactionGuard();
+    }
 
     // Save state after compaction
     this.saveState();
+    await this.persistStateSidecar();
 
     return {
       ok: true,
@@ -452,6 +649,7 @@ export class DeepSeekContextEngine implements ContextEngine {
   async dispose(): Promise<void> {
     // Save state to module-level map so next turn's engine can restore it
     this.saveState();
+    await this.persistStateSidecar();
     log.info(`[deepseek-harness] dispose: state saved, prefix=${this.prefix.length}, tail=${this.tail.length}`);
     // DO NOT clear layers — the module-level map holds them across PI's dispose/recreate cycle
   }
@@ -480,6 +678,13 @@ export class DeepSeekContextEngine implements ContextEngine {
     summaryTokens: number;
     totalTokens: number;
     cacheHitEstimate: number;
+    prefixMessages: number;
+    tailMessages: number;
+    compactionCount: number;
+    consecutiveOverThresholdCompactions: number;
+    compactStuck: boolean;
+    lastCompactionTokensBefore: number | null;
+    lastCompactionTokensAfter: number | null;
   } {
     const prefixTokens = estimateTotalTokens(this.prefix);
     const tailTokens = estimateTotalTokens(this.tail);
@@ -491,6 +696,13 @@ export class DeepSeekContextEngine implements ContextEngine {
       summaryTokens,
       totalTokens,
       cacheHitEstimate: totalTokens > 0 ? prefixTokens / totalTokens : 0,
+      prefixMessages: this.prefix.length,
+      tailMessages: this.tail.length,
+      compactionCount: this.compactionCount,
+      consecutiveOverThresholdCompactions: this.consecutiveOverThresholdCompactions,
+      compactStuck: this.compactStuck,
+      lastCompactionTokensBefore: this.lastCompactionTokensBefore,
+      lastCompactionTokensAfter: this.lastCompactionTokensAfter,
     };
   }
 }

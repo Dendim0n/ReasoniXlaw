@@ -4,6 +4,9 @@
  * These tests verify the prefix-stable context management logic.
  */
 
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, test, expect, beforeEach } from "vitest";
 import { DeepSeekContextEngine, _clearSessionState } from "../src/context-engine.js";
 import { estimateTextTokens, estimateTotalTokens, extractContent } from "../src/types.js";
@@ -37,6 +40,15 @@ function toolResultMsg(toolCallId: string, toolName: string, content: string): A
     isError: false,
     timestamp: Date.now(),
   } as unknown as AgentMessage;
+}
+
+async function makeSessionFile(name: string): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), `reasonixlaw-${name}-`));
+  return join(dir, "session.jsonl");
+}
+
+async function cleanupSessionFile(sessionFile: string): Promise<void> {
+  await rm(sessionFile.replace(/session\.jsonl$/u, ""), { recursive: true, force: true });
 }
 
 // ── Token estimation ────────────────────────────────────────────────────────
@@ -82,8 +94,12 @@ describe("DeepSeekContextEngine", () => {
   const SESSION_FILE = "/tmp/test-session.jsonl";
 
   // Clear module-level state before each test so tests don't leak
-  beforeEach(() => {
+  beforeEach(async () => {
     _clearSessionState();
+    await rm(`${SESSION_FILE}.deepseek-harness-state.json`, { force: true });
+    for (const id of ["t1", "t2", "t3", "t4", "t5", "t6", "t7"]) {
+      await rm(`/tmp/${id}.deepseek-harness-state.json`, { force: true });
+    }
   });
 
   test("first assemble splits into prefix + tail", async () => {
@@ -102,6 +118,11 @@ describe("DeepSeekContextEngine", () => {
     expect(result.messages).toHaveLength(4);
     const stats = engine.getCacheStats();
     expect(stats.prefixTokens).toBeGreaterThan(0);
+  });
+
+  test("runtime context engine id uses project name", () => {
+    const engine = new DeepSeekContextEngine();
+    expect(engine.info.id).toBe("reasonixlaw-prefix-stable");
   });
 
   test("subsequent assemble only appends new messages to tail", async () => {
@@ -254,6 +275,155 @@ describe("DeepSeekContextEngine", () => {
     expect(result.ok).toBe(true);
   });
 
+  test("compact keeps a token-budgeted tail beyond the minimum recent count", async () => {
+    const engine = new DeepSeekContextEngine({
+      prefixLockCount: 1,
+      recentKeepCount: 2,
+      tailTokenBudget: 120,
+      archiveDropped: false,
+    });
+    await engine.bootstrap({ sessionId: SESSION_ID, sessionFile: SESSION_FILE });
+
+    const messages = [
+      userMsg("prefix"),
+      assistantMsg("old huge " + "x".repeat(800)),
+      userMsg("tail one"),
+      assistantMsg("tail two"),
+      userMsg("tail three"),
+      assistantMsg("tail four"),
+    ];
+
+    await engine.assemble({ sessionId: SESSION_ID, messages, model: "deepseek-v4-flash" });
+    const compactResult = await engine.compact({
+      sessionId: SESSION_ID,
+      sessionFile: SESSION_FILE,
+      tokenBudget: 1000,
+    });
+    expect(compactResult.compacted).toBe(true);
+
+    const assembled = await engine.assemble({ sessionId: SESSION_ID, messages, model: "deepseek-v4-flash" });
+    expect(assembled.messages).toHaveLength(6); // prefix + summary + four-token-budgeted tail messages
+    expect(extractContent(assembled.messages.at(-4)!)).toBe("tail one");
+  });
+
+  test("compact pauses after repeated compactions cannot get below threshold", async () => {
+    const engine = new DeepSeekContextEngine({
+      prefixLockCount: 1,
+      recentKeepCount: 1,
+      tailTokenBudget: 1,
+      archiveDropped: false,
+    });
+    await engine.bootstrap({ sessionId: SESSION_ID, sessionFile: SESSION_FILE });
+
+    const firstMessages = [
+      userMsg("prefix " + "p".repeat(200)),
+      assistantMsg("old " + "x".repeat(400)),
+      userMsg("recent " + "y".repeat(400)),
+    ];
+    await engine.assemble({ sessionId: SESSION_ID, messages: firstMessages, model: "deepseek-v4-flash" });
+    await engine.compact({ sessionId: SESSION_ID, sessionFile: SESSION_FILE, tokenBudget: 200 });
+
+    const secondMessages = [...firstMessages, assistantMsg("more " + "z".repeat(400)), userMsg("latest " + "q".repeat(400))];
+    await engine.assemble({ sessionId: SESSION_ID, messages: secondMessages, model: "deepseek-v4-flash" });
+    await engine.compact({ sessionId: SESSION_ID, sessionFile: SESSION_FILE, tokenBudget: 200 });
+
+    expect(engine.getCacheStats().compactStuck).toBe(true);
+
+    const thirdMessages = [...secondMessages, assistantMsg("again " + "r".repeat(400))];
+    await engine.assemble({ sessionId: SESSION_ID, messages: thirdMessages, model: "deepseek-v4-flash" });
+    const third = await engine.compact({ sessionId: SESSION_ID, sessionFile: SESSION_FILE, tokenBudget: 200 });
+    expect(third.compacted).toBe(false);
+    expect(third.reason).toContain("paused");
+  });
+
+  test("summary is structured and recompacted instead of appended indefinitely", async () => {
+    const summaries = ["first long summary " + "a".repeat(200), "merged summary"];
+    const engine = new DeepSeekContextEngine({
+      prefixLockCount: 1,
+      recentKeepCount: 1,
+      tailTokenBudget: 1,
+      maxSummaryTokens: 8,
+      archiveDropped: false,
+    });
+    await engine.bootstrap({ sessionId: SESSION_ID, sessionFile: SESSION_FILE });
+
+    const runtimeContext = {
+      llm: {
+        complete: async () => ({ text: summaries.shift() ?? "fallback merged summary" }),
+      },
+    } as never;
+
+    const firstMessages = [userMsg("prefix"), assistantMsg("old one"), userMsg("recent one")];
+    await engine.assemble({ sessionId: SESSION_ID, messages: firstMessages, model: "deepseek-v4-flash" });
+    await engine.compact({ sessionId: SESSION_ID, sessionFile: SESSION_FILE, runtimeContext });
+
+    const secondMessages = [...firstMessages, assistantMsg("old two"), userMsg("recent two")];
+    await engine.assemble({ sessionId: SESSION_ID, messages: secondMessages, model: "deepseek-v4-flash" });
+    await engine.compact({ sessionId: SESSION_ID, sessionFile: SESSION_FILE, runtimeContext });
+
+    const assembled = await engine.assemble({ sessionId: SESSION_ID, messages: secondMessages, model: "deepseek-v4-flash" });
+    const summaryMessage = assembled.messages.find((m) => extractContent(m).includes("<compaction-summary>"));
+    expect(summaryMessage).toBeDefined();
+    const summaryContent = extractContent(summaryMessage!);
+    expect(summaryContent).toContain("merged summary");
+    expect(summaryContent).not.toContain("---");
+  });
+
+  test("dispose persists layer state to a session sidecar", async () => {
+    const sessionFile = await makeSessionFile("sidecar");
+    try {
+      const engine = new DeepSeekContextEngine({ prefixLockCount: 2 });
+      await engine.bootstrap({ sessionId: "sidecar-session", sessionFile });
+      await engine.assemble({
+        sessionId: "sidecar-session",
+        sessionFile,
+        messages: [userMsg("hello"), assistantMsg("world"), userMsg("tail")],
+        model: "deepseek-v4-flash",
+      } as never);
+      const statsBefore = engine.getCacheStats();
+      await engine.dispose();
+
+      _clearSessionState("sidecar-session");
+
+      const engine2 = new DeepSeekContextEngine({ prefixLockCount: 2 });
+      await engine2.bootstrap({ sessionId: "sidecar-session", sessionFile });
+      const statsAfter = engine2.getCacheStats();
+      expect(statsAfter.prefixTokens).toBe(statsBefore.prefixTokens);
+      expect(statsAfter.tailTokens).toBe(statsBefore.tailTokens);
+    } finally {
+      await cleanupSessionFile(sessionFile);
+    }
+  });
+
+  test("old tool results are trimmed with a marker while recent tool results stay intact", async () => {
+    const engine = new DeepSeekContextEngine({
+      prefixLockCount: 1,
+      recentKeepCount: 1,
+      toolResultTrimChars: 20,
+      archiveDropped: false,
+    });
+    await engine.bootstrap({ sessionId: SESSION_ID, sessionFile: SESSION_FILE });
+
+    const oldTool = "old-tool-" + "x".repeat(100);
+    const recentTool = "recent-tool-" + "y".repeat(100);
+    const result = await engine.assemble({
+      sessionId: SESSION_ID,
+      messages: [
+        userMsg("prefix"),
+        toolResultMsg("old", "bash", oldTool),
+        assistantMsg("between"),
+        toolResultMsg("recent", "bash", recentTool),
+      ],
+      model: "deepseek-v4-flash",
+      tokenBudget: 100,
+    });
+
+    const toolResults = result.messages.filter((m) => m.role === "toolResult");
+    expect(extractContent(toolResults[0])).toContain("trimmed by context engine");
+    expect(extractContent(toolResults[0])).toContain("originalLength");
+    expect(extractContent(toolResults[1])).toBe(recentTool);
+  });
+
   test("dispose saves state for cross-turn persistence", async () => {
     const engine = new DeepSeekContextEngine({ prefixLockCount: 2 });
     await engine.bootstrap({ sessionId: SESSION_ID, sessionFile: SESSION_FILE });
@@ -277,6 +447,39 @@ describe("DeepSeekContextEngine", () => {
     const statsAfter = engine2.getCacheStats();
     expect(statsAfter.prefixTokens).toBe(statsBefore.prefixTokens);
     expect(statsAfter.tailTokens).toBe(statsBefore.tailTokens);
+  });
+});
+
+describe("plugin manifest", () => {
+  test("declares reasonixlaw plugin id", async () => {
+    const manifest = JSON.parse(await readFile(new URL("../openclaw.plugin.json", import.meta.url), "utf-8")) as {
+      id?: string;
+    };
+    expect(manifest.id).toBe("reasonixlaw");
+  });
+
+  test("declares context-engine kind", async () => {
+    const manifest = JSON.parse(await readFile(new URL("../openclaw.plugin.json", import.meta.url), "utf-8")) as {
+      kind?: string;
+    };
+    expect(manifest.kind).toBe("context-engine");
+  });
+
+  test("declares all documented tuning options in config schema", async () => {
+    const manifest = JSON.parse(await readFile(new URL("../openclaw.plugin.json", import.meta.url), "utf-8")) as {
+      configSchema?: { properties?: Record<string, unknown> };
+    };
+    expect(Object.keys(manifest.configSchema?.properties ?? {})).toEqual([
+      "targetModels",
+      "prefixLockCount",
+      "recentKeepCount",
+      "tailTokenBudget",
+      "compactRatio",
+      "outputReservedTokens",
+      "maxSummaryTokens",
+      "toolResultTrimChars",
+      "archiveDropped",
+    ]);
   });
 });
 

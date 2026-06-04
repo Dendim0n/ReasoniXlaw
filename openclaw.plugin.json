@@ -1,10 +1,10 @@
 {
-  "id": "deepseek-harness",
+  "id": "reasonixlaw",
   "name": "ReasoniXlaw",
   "version": "0.1.1",
-  "description": "Prefix-cache stable context engine for DeepSeek models",
+  "description": "Prefix-cache stable context engine for DeepSeek-compatible models",
   "entry": "dist/index.js",
-  "kind": "plugin",
+  "kind": "context-engine",
   "activation": {
     "onStartup": true
   },
@@ -24,9 +24,25 @@
         "type": "number",
         "description": "Recent messages to keep verbatim in tail"
       },
+      "tailTokenBudget": {
+        "type": "number",
+        "description": "Token budget for keeping additional recent tail messages"
+      },
       "compactRatio": {
         "type": "number",
         "description": "Context ratio that triggers compaction"
+      },
+      "outputReservedTokens": {
+        "type": "number",
+        "description": "Output budget reserved before considering compaction pressure"
+      },
+      "maxSummaryTokens": {
+        "type": "number",
+        "description": "Maximum accumulated summary size before recompression"
+      },
+      "toolResultTrimChars": {
+        "type": "number",
+        "description": "Characters retained from older tool results before trimming"
       },
       "archiveDropped": {
         "type": "boolean",

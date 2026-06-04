@@ -21,16 +21,22 @@ export interface DeepSeekHarnessConfig {
   prefixLockCount?: number;
   /** Number of recent messages to keep verbatim in the tail. Default: 8. */
   recentKeepCount?: number;
+  /** Token budget for the verbatim tail beyond the minimum recent message count. Default: 16384. */
+  tailTokenBudget?: number;
   /** Context window ratio that triggers compaction. Default: 0.8. */
   compactRatio?: number;
   /** Max tokens to reserve for output. Default: 32768. */
   outputReservedTokens?: number;
+  /** Max tokens allowed for accumulated compaction summary before it is recompressed. Default: 2000. */
+  maxSummaryTokens?: number;
+  /** Max characters retained from old tool results before trimming. Default: 2000. */
+  toolResultTrimChars?: number;
   /** Whether to archive dropped messages. Default: true. */
   archiveDropped?: boolean;
   /**
    * Model name patterns that trigger prefix-stable mode.
-   * Default: ["deepseek-v4-flash", "deepseek-v4-pro"]
-   * Any model string containing "deepseek" also matches.
+   * Default: ["deepseek-v4-flash", "deepseek-v4-pro", "mimo-v2.5-pro", "mimo-v2.5"]
+   * Any model string containing "deepseek" also matches independently of this list.
    */
   targetModels?: string[];
 }
@@ -40,8 +46,11 @@ export type ResolvedConfig = Required<DeepSeekHarnessConfig>;
 export const DEFAULT_CONFIG: ResolvedConfig = {
   prefixLockCount: 2,
   recentKeepCount: 8,
+  tailTokenBudget: 16384,
   compactRatio: 0.8,
   outputReservedTokens: 32768,
+  maxSummaryTokens: 2000,
+  toolResultTrimChars: 2000,
   archiveDropped: true,
   targetModels: ["deepseek-v4-flash", "deepseek-v4-pro", "mimo-v2.5-pro", "mimo-v2.5"],
 };

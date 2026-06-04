@@ -1,0 +1,90 @@
+{
+  "version": "2.1.0",
+  "source": "codex",
+  "project": "Dendim0n/ReasoniXlaw",
+  "branch": "main",
+  "owner": "Kimi",
+  "records": [
+    {
+      "filepath": "src/context-engine.ts",
+      "hash": "ed70a2df6e7cc8c39fc9b28f3fa62f1d352110b708bda3dbe77c1f8c8a7fcb65",
+      "risks": [],
+      "summary": "",
+      "human": false,
+      "ts": 1780566971,
+      "reported": 1
+    },
+    {
+      "filepath": "src/types.ts",
+      "hash": "20257f3b408c83785f43985b17b6e258b434b99c5e63ddb2193f803206844b23",
+      "risks": [],
+      "summary": "",
+      "human": false,
+      "ts": 1780566983,
+      "reported": 1
+    },
+    {
+      "filepath": "src/index.ts",
+      "hash": "1428101def80ba7169c922344bc97aaf1c3b9f221b46c18749225c49acd1c78a",
+      "risks": [],
+      "summary": "",
+      "human": false,
+      "ts": 1780567316,
+      "reported": 1
+    },
+    {
+      "filepath": "src/context-engine.ts",
+      "hash": "1ca488f4f6c1080d70e83e4b212e85bd77c3a42b15084374208bf25d44d3a073",
+      "risks": [],
+      "summary": "",
+      "human": false,
+      "ts": 1780567331,
+      "reported": 1
+    },
+    {
+      "filepath": "src/context-engine.ts",
+      "hash": "6be0dae8dcafbb36034f75a8473cacc454b5cf727652029101cd59a2e5f936f7",
+      "risks": [],
+      "summary": "",
+      "human": false,
+      "ts": 1780568280,
+      "reported": 1
+    },
+    {
+      "filepath": "src/types.ts",
+      "hash": "8a99dc60f7144cb1e9f3bef0a9b45eeb2080dcf49a2644cf6ecb8173d6b7575b",
+      "risks": [],
+      "summary": "",
+      "human": false,
+      "ts": 1780568280,
+      "reported": 1
+    },
+    {
+      "filepath": "tests/context-engine.test.ts",
+      "hash": "00caa23aebd591ba1331f519c015a6832065c0960dfaa87f5bdc47adf9e958e1",
+      "risks": [],
+      "summary": "",
+      "human": false,
+      "ts": 1780568280,
+      "reported": 1
+    },
+    {
+      "filepath": "openclaw.plugin.json",
+      "hash": "2db68c3d6fe90b52e3a2ca9deefa7c499091f84b271116e354da72f7d02dac21",
+      "risks": [],
+      "summary": "",
+      "human": false,
+      "ts": 1780568280,
+      "reported": 1
+    },
+    {
+      "filepath": "package.json",
+      "hash": "3edb35da3a89495724e7221119e6be25654cd86652589cc339f8540a288cc785",
+      "risks": [],
+      "summary": "",
+      "human": false,
+      "ts": 1780568280,
+      "reported": 1
+    }
+  ]
+}
