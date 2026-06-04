@@ -22,6 +22,7 @@ runtime envelope remain owned by OpenClaw/PI.
 | Archive directory | `~/.openclaw/reasonixlaw/archive/` | New archive writes use the project id |
 | State sidecar suffix | `.reasonixlaw-state.json` | Written next to the OpenClaw session file |
 | Legacy sidecar suffix | `.deepseek-harness-state.json` | Read fallback for sessions created before the rename |
+| Sidecar lifecycle | Session-local cache | New-session bootstrap clears stale in-memory projections and safely identifiable old sidecars |
 
 The public project name is ReasoniXlaw. Some internal symbols still use
 `DeepSeekContextEngine` because the implementation began as a DeepSeek-specific
@@ -74,11 +75,11 @@ User sends message
 
 | Method | When Called | What We Do |
 |--------|-----------|------------|
-| `bootstrap()` | Session init | Store session ID, set up archive dir, restore in-memory or sidecar state |
+| `bootstrap()` | Session init | Store session ID, set up archive dir, restore current state, or clean stale cache before starting a new projection |
 | `assemble()` | Before every model call | Split runtime custom messages, build prefix+summary+tail, diff new stable messages |
 | `compact()` | When context nears limit | Token-budget tail selection, structured middle summary, stuck-loop guard |
 | `afterTurn()` | After model call | Record latest PI `promptCache` telemetry when available |
-| `maintain()` | After turns | No-op (future: periodic cleanup) |
+| `maintain()` | After turns | No-op |
 | `ingest()` | Per-message tracking | No-op (assemble handles diffing) |
 | `dispose()` | Plugin unload | Save in-memory and sidecar state |
 
@@ -116,6 +117,12 @@ new ReasoniXlaw sidecar and then falls back to the legacy
 `<sessionFile>.deepseek-harness-state.json` file.
 
 Runtime context custom messages are deliberately excluded from sidecar state.
+Sidecars are treated as rebuildable cache, not durable transcript data. When
+bootstrap cannot restore the requested session and therefore starts a new
+projection, the engine removes stale in-memory projections and deletes old
+ReasoniXlaw or legacy sidecars it can identify safely. That includes sidecars
+for sessions seen in the current process and sidecars in the new session file's
+directory, excluding the current session's own sidecar paths.
 
 ## Runtime Context Handling
 

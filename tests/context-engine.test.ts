@@ -6,7 +6,7 @@
 
 import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, test, expect, beforeEach } from "vitest";
 import { DeepSeekContextEngine, _clearSessionState } from "../src/context-engine.js";
 import { estimateTextTokens, estimateTotalTokens, extractContent } from "../src/types.js";
@@ -452,6 +452,52 @@ describe("DeepSeekContextEngine", () => {
       expect(resetText).not.toContain("legacy prefix");
       expect(resetText).toContain("new prefix");
       expect(engine.getCacheStats().prefixResetCount).toBe(1);
+    } finally {
+      await cleanupSessionFile(sessionFile);
+    }
+  });
+
+  test("new session bootstrap removes stale sidecars in the same session directory", async () => {
+    const sessionFile = await makeSessionFile("sidecar-cleanup");
+    try {
+      const dir = dirname(sessionFile);
+      const staleSessionFile = join(dir, "old-session.jsonl");
+      const staleReasonixlaw = `${staleSessionFile}.reasonixlaw-state.json`;
+      const staleLegacy = `${staleSessionFile}.deepseek-harness-state.json`;
+      await writeFile(staleReasonixlaw, JSON.stringify({ version: 1, sessionId: "old-session", state: {} }), "utf-8");
+      await writeFile(staleLegacy, JSON.stringify({ version: 1, sessionId: "old-session", state: {} }), "utf-8");
+
+      const engine = new DeepSeekContextEngine();
+      await engine.bootstrap({ sessionId: "new-session", sessionFile });
+
+      await expect(access(staleReasonixlaw)).rejects.toThrow();
+      await expect(access(staleLegacy)).rejects.toThrow();
+    } finally {
+      await cleanupSessionFile(sessionFile);
+    }
+  });
+
+  test("new session bootstrap drops stale in-memory projections", async () => {
+    const sessionFile = await makeSessionFile("memory-cleanup");
+    try {
+      const dir = dirname(sessionFile);
+      const oldSessionFile = join(dir, "old-session.jsonl");
+      const oldEngine = new DeepSeekContextEngine({ prefixLockCount: 2 });
+      await oldEngine.bootstrap({ sessionId: "old-memory-session", sessionFile: oldSessionFile });
+      await oldEngine.assemble({
+        sessionId: "old-memory-session",
+        sessionFile: oldSessionFile,
+        messages: [userMsg("old prefix"), assistantMsg("old answer"), userMsg("old tail")],
+        model: "deepseek-v4-flash",
+      } as never);
+      await oldEngine.dispose();
+
+      const newEngine = new DeepSeekContextEngine();
+      await newEngine.bootstrap({ sessionId: "new-memory-session", sessionFile });
+
+      const oldAgain = new DeepSeekContextEngine({ prefixLockCount: 2 });
+      await oldAgain.bootstrap({ sessionId: "old-memory-session", sessionFile: oldSessionFile });
+      expect(oldAgain.getCacheStats().prefixMessages).toBe(0);
     } finally {
       await cleanupSessionFile(sessionFile);
     }

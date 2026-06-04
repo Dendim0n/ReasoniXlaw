@@ -204,6 +204,7 @@ function isDeepSeekModel(model: string | undefined, targetModels: string[]): boo
  * but the module (and this Map) stays loaded in the Node process.
  */
 interface SessionLayers {
+  sessionFile?: string | null;
   prefix: AgentMessage[];
   tail: AgentMessage[];
   compressedSummary: string | null;
@@ -284,6 +285,7 @@ export class DeepSeekContextEngine implements ContextEngine {
   private saveState(): void {
     if (!this.sessionId) return;
     sessionStateMap.set(this.sessionId, {
+      sessionFile: this.sessionFile,
       prefix: this.prefix,
       tail: this.tail,
       compressedSummary: this.compressedSummary,
@@ -336,6 +338,13 @@ export class DeepSeekContextEngine implements ContextEngine {
     return this.sessionFile ? `${this.sessionFile}${suffix}` : null;
   }
 
+  private stateSidecarPathsForSessionFile(sessionFile: string): string[] {
+    return [
+      `${sessionFile}${STATE_SIDECAR_SUFFIX}`,
+      `${sessionFile}${LEGACY_STATE_SIDECAR_SUFFIX}`,
+    ];
+  }
+
   private async persistStateSidecar(): Promise<void> {
     const filePath = this.stateSidecarPath();
     if (!filePath || !this.sessionId) return;
@@ -386,6 +395,59 @@ export class DeepSeekContextEngine implements ContextEngine {
     }
   }
 
+  private async removeStateSidecar(filePath: string): Promise<boolean> {
+    try {
+      const fs = await import("node:fs");
+      await fs.promises.unlink(filePath);
+      return true;
+    } catch (err) {
+      if ((err as { code?: string }).code !== "ENOENT") {
+        log.warn(`[${ARTIFACT_ID}] state sidecar cleanup failed: file=${filePath}, error=${String(err)}`);
+      }
+      return false;
+    }
+  }
+
+  private async cleanupOldSessionState(currentSessionId: string, currentSessionFile: string): Promise<void> {
+    const staleFiles = new Set<string>();
+    const currentSidecars = new Set(this.stateSidecarPathsForSessionFile(currentSessionFile));
+
+    for (const [sessionId, state] of sessionStateMap) {
+      if (sessionId === currentSessionId) continue;
+      if (state.sessionFile) {
+        for (const filePath of this.stateSidecarPathsForSessionFile(state.sessionFile)) {
+          if (!currentSidecars.has(filePath)) staleFiles.add(filePath);
+        }
+      }
+      sessionStateMap.delete(sessionId);
+    }
+
+    try {
+      const fs = await import("node:fs");
+      const path = await import("node:path");
+      const dir = path.dirname(currentSessionFile);
+      const entries = await fs.promises.readdir(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isFile()) continue;
+        if (!entry.name.endsWith(STATE_SIDECAR_SUFFIX) && !entry.name.endsWith(LEGACY_STATE_SIDECAR_SUFFIX)) continue;
+        const filePath = path.join(dir, entry.name);
+        if (!currentSidecars.has(filePath)) staleFiles.add(filePath);
+      }
+    } catch (err) {
+      if ((err as { code?: string }).code !== "ENOENT") {
+        log.warn(`[${ARTIFACT_ID}] state sidecar directory cleanup failed: ${String(err)}`);
+      }
+    }
+
+    let removed = 0;
+    for (const filePath of staleFiles) {
+      if (await this.removeStateSidecar(filePath)) removed++;
+    }
+    if (removed > 0) {
+      log.info(`[${ARTIFACT_ID}] cleanupOldSessionState: removed ${removed} stale sidecar(s)`);
+    }
+  }
+
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
   async bootstrap(params: {
@@ -404,7 +466,9 @@ export class DeepSeekContextEngine implements ContextEngine {
     this.sessionId = params.sessionId;
 
     // Try to restore state from module-level map
-    if (!this.restoreState(params.sessionId) && !(await this.restoreStateSidecar(params.sessionId))) {
+    const restored = this.restoreState(params.sessionId) || (await this.restoreStateSidecar(params.sessionId));
+    if (!restored) {
+      await this.cleanupOldSessionState(params.sessionId, params.sessionFile);
       // New session — clear layers
       this.prefix = [];
       this.tail = [];

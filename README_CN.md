@@ -234,7 +234,8 @@ PI 的 model transport（`params.model`）已经：
 - prefix 在压缩时不被改写，缓存命中概率更高。
 - 最近 tail 按 token 预算选择，旧工具输出可先裁剪，减少上下文抖动。
 - OpenClaw 注入的 runtime context 只作用于当前轮，不会积累进锁定投影或 sidecar。
-- 当 OpenClaw 提供稳定 `sessionFile` 时，层状态会写入 `<sessionFile>.reasonixlaw-state.json`。已有的 `<sessionFile>.deepseek-harness-state.json` 仍会作为旧格式 fallback 读取。
+- 在同一个 session 内，当 OpenClaw 提供稳定 `sessionFile` 时，层状态会写入 `<sessionFile>.reasonixlaw-state.json`。已有的 `<sessionFile>.deepseek-harness-state.json` 仍会作为旧格式 fallback 读取。
+- 新 session 启动时会清理旧 sidecar cache：引擎会清掉旧内存投影，并删除它能安全识别的旧 sidecar。
 - 不重复造 transport。认证、工具、流式、重试、对话持久化和 provider 缓存遥测仍由 PI 负责。
 - `getCacheStats()` 同时报告本地层 token 估算，以及 PI 暴露的最近一次真实 `promptCache` 数据。
 
@@ -247,7 +248,7 @@ PI 的 model transport（`params.model`）已经：
 - 有 runtime LLM 可用时，压缩会增加一次小模型调用和延迟。抽取式 fallback 更便宜，但精度更低。
 - token 估算是 CJK-aware 字符估算，不是 provider tokenizer 的精确值。
 - 旧工具结果裁剪可能隐藏证据。裁剪标记会说明发生过裁剪，archive 可以在本地保留原始消息。
-- sidecar 和 archive 会在本地保留上下文投影数据和被压缩消息。不希望本地保留时请关闭 `archiveDropped`。
+- 活跃 session 期间，sidecar 和 archive 会在本地保留上下文投影数据和被压缩消息。不希望保留被压缩消息时请关闭 `archiveDropped`。sidecar 被视为可重建 cache，新 session bootstrap 时会清理引擎已知或位于新 session 文件同目录下的旧 sidecar。
 - 如果连续两次压缩仍超过阈值，stuck guard 会暂停自动压缩。这能避免重复浪费，但剩余压力仍可能需要 host 处理。
 
 ## 费用对比

@@ -238,7 +238,8 @@ What improves:
 - Higher cache hit probability because the prefix is not rewritten during compaction.
 - Less context churn because recent tail selection is token-aware and old tool output can be trimmed before full compaction.
 - Runtime context injected by OpenClaw is current-turn only, so dynamic workspace/date/session material does not accumulate in the locked projection or sidecar.
-- Better restart behavior when OpenClaw provides a stable `sessionFile`, because layer state is also persisted to `<sessionFile>.reasonixlaw-state.json`. Existing `<sessionFile>.deepseek-harness-state.json` files are still read as a legacy fallback.
+- Better restart behavior within a session when OpenClaw provides a stable `sessionFile`, because layer state is also persisted to `<sessionFile>.reasonixlaw-state.json`. Existing `<sessionFile>.deepseek-harness-state.json` files are still read as a legacy fallback.
+- Old sidecar caches are cleaned when a new session starts: the engine clears old in-memory projections and removes stale sidecars it can safely identify.
 - No duplicated transport code. PI still owns auth, tools, streaming, retries, transcript persistence, and provider cache telemetry.
 - `getCacheStats()` reports both local layer estimates and the latest real `promptCache` payload exposed by PI.
 
@@ -251,7 +252,7 @@ What it costs:
 - Compaction can add latency and a small extra model call when runtime LLM summarization is available. The extractive fallback is cheaper but less precise.
 - Token estimates are approximate, CJK-aware character estimates, not provider tokenizer counts.
 - Old tool-result trimming can hide evidence from the model. The marker records what was trimmed, and archives can preserve the original locally.
-- Local sidecars and archives retain conversation projection data and dropped messages. Disable `archiveDropped` when disk retention is not acceptable.
+- During an active session, local sidecars and archives retain conversation projection data and dropped messages. Disable `archiveDropped` when dropped-message retention is not acceptable. Sidecars are treated as rebuildable cache and are cleaned on new-session bootstrap when they are known to the engine or live next to the new session file.
 - If compaction cannot get below threshold twice in a row, the stuck guard pauses automatic compaction. That avoids repeated waste, but the host may still need to handle the remaining pressure.
 
 ## Token Economics

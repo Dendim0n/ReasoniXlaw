@@ -14,6 +14,7 @@ Implemented optimizations for ReasoniXlaw while keeping the existing model detec
 | Stuck guard | Implemented | Repeated over-threshold compactions set `compactStuck` and pause automatic compaction |
 | Structured summaries | Implemented | Summary prompt preserves goal, decisions, files, commands, errors, and next step |
 | Sidecar state | Implemented | Layer state persists to `<sessionFile>.reasonixlaw-state.json`; legacy `<sessionFile>.deepseek-harness-state.json` files still restore |
+| Sidecar cleanup | Implemented | New-session bootstrap clears stale in-memory projections and old sidecars known to the engine or in the current session directory |
 | Tool-result trimming | Implemented | Older tool results are trimmed with an explicit length marker |
 | Runtime context isolation | Implemented | `openclaw.runtime-context` custom messages are current-turn only and excluded from sidecar state |
 | Prompt-cache telemetry | Implemented | `afterTurn()` records the latest PI `promptCache` payload and break codes in `getCacheStats()` |
@@ -84,6 +85,7 @@ The `deepseek-harness` name remains only as a legacy config fallback and legacy 
 - Add a small JSON state sidecar derived from the OpenClaw session file path.
 - Persist prefix, tail, compressed summary, ingested count, last model, compaction counters, and stats.
 - Load the new ReasoniXlaw sidecar during bootstrap before treating the session as new, with a fallback read from the old `deepseek-harness` sidecar suffix.
+- When bootstrap starts a new projection, clear stale in-memory session states and delete old sidecars that are known to the current process or live in the new session file's directory.
 
 ## 7. Safer Tool Output Handling
 
@@ -145,6 +147,7 @@ The `deepseek-harness` name remains only as a legacy config fallback and legacy 
 - **Extra compaction work:** Runtime LLM summarization can add latency and token cost. The fallback avoids the model call but is less precise.
 - **Approximate accounting:** Token estimates are CJK-aware character estimates, not exact provider tokenizer counts.
 - **Local retention:** Archives and sidecars keep local context data. `archiveDropped: false` disables dropped-message archives, but sidecar state remains part of restart recovery.
+- **Bounded sidecar cache:** Sidecars are rebuildable from OpenClaw's full session transcript. New-session bootstrap clears old sidecars it can identify safely, but the plugin does not scan arbitrary filesystem locations without a session path.
 - **Trimmed evidence:** Old tool results can be shortened. The marker records original length and retained length so the model can see that evidence was truncated.
 - **Paused compaction:** `compactStuck` prevents repeated failed compactions from burning turns. It also means the host may need to apply another pressure strategy if the prompt is still too large.
 - **Runtime envelope boundary:** Hidden system prompt, tool schemas, and PI runtime envelope are controlled by OpenClaw/PI. ReasoniXlaw optimizes the same-session message projection it receives.
